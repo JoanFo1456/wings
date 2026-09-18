@@ -1,6 +1,7 @@
 package server
 
 import (
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 
@@ -35,7 +36,16 @@ type ResourceUsage struct {
 func (s *Server) Proc() ResourceUsage {
 	s.resources.mu.Lock()
 	defer s.resources.mu.Unlock()
-	if config.Get().System.Quotas.Enabled {
+	if s.UsesVirtualDisk() {
+		// The disk belongs to this server alone, so the kernel's own
+		// accounting is both exact and immediate.
+		m, err := VirtualDisks().Usage(filepath.Join(config.Get().System.Data, s.ID()))
+		if err != nil {
+			log.WithFields(log.Fields{"server-uuid": s.ID(), "error": err.Error()}).Error("there was an issue reading virtual disk usage")
+		} else {
+			atomic.StoreInt64(&s.resources.Disk, m.Used)
+		}
+	} else if config.Get().System.Quotas.Enabled {
 		used, err := quotas.GetQuota(s.ID())
 		if err != nil {
 			log.WithFields(log.Fields{"server-uuid": s.ID(), "error": err.Error()}).Error("there was an issue getting the used disk space")

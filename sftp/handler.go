@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"emperror.dev/errors"
 	"github.com/apex/log"
@@ -38,6 +39,16 @@ type Handler struct {
 type quotaWriterAt struct {
 	io.WriterAt
 	server *server.Server
+
+	// path and reported exist only to make a quota rejection visible in the
+	// log exactly once per file.
+	//
+	// Clients such as WinSCP keep dozens of writes in flight at a time, so a
+	// file that runs out of space produces a burst of identical failures. Both
+	// fields are shared through pointers because this struct is handed to
+	// pkg/sftp by value.
+	path     string
+	reported *atomic.Bool
 }
 
 func (w quotaWriterAt) WriteAt(p []byte, off int64) (int, error) {
@@ -47,9 +58,26 @@ func (w quotaWriterAt) WriteAt(p []byte, off int64) (int, error) {
 
 	n, err := w.WriterAt.WriteAt(p, off)
 	if filesystem.IsErrorCode(err, filesystem.ErrCodeDiskSpace) {
+		w.reportQuotaExceeded(off, len(p))
 		return n, ErrSSHQuotaExceeded
 	}
 	return n, err
+}
+
+// reportQuotaExceeded logs the first quota rejection for a file.
+func (w quotaWriterAt) reportQuotaExceeded(off int64, size int) {
+	if w.reported == nil || w.reported.Swap(true) {
+		return
+	}
+	fields := log.Fields{"path": w.path, "offset": off, "chunk_bytes": size}
+	if w.server != nil {
+		fields["server"] = w.server.ID()
+		if fs := w.server.Filesystem(); fs != nil {
+			fields["limit_bytes"] = fs.MaxDisk()
+			fields["used_bytes"] = fs.CachedUsage()
+		}
+	}
+	log.WithFields(fields).Warn("sftp: refused a write that would exceed the server's disk limit")
 }
 
 func (w quotaWriterAt) Close() error {
@@ -126,6 +154,8 @@ func (h *Handler) Filewrite(request *sftp.Request) (io.WriterAt, error) {
 	// If the user doesn't have enough space left on the server it should respond with an
 	// error since we won't be letting them write this file to the disk.
 	if !h.fs.HasSpaceAvailable(false) {
+		l.WithField("limit_bytes", h.fs.MaxDisk()).WithField("used_bytes", h.fs.CachedUsage()).
+			Warn("sftp: refused to open a file for writing, the server is already at its disk limit")
 		return nil, ErrSSHQuotaExceeded
 	}
 
@@ -165,7 +195,12 @@ func (h *Handler) Filewrite(request *sftp.Request) (io.WriterAt, error) {
 		event = server.ActivitySftpCreate
 	}
 	h.events.MustLog(event, FileAction{Entity: request.Filepath})
-	return quotaWriterAt{WriterAt: f, server: h.server}, nil
+	return quotaWriterAt{
+		WriterAt: f,
+		server:   h.server,
+		path:     request.Filepath,
+		reported: &atomic.Bool{},
+	}, nil
 }
 
 // Filecmd hander for basic SFTP system calls related to files, but not anything to do with reading

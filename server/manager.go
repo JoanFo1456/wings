@@ -196,10 +196,33 @@ func (m *Manager) InitServer(data remote.ServerConfigurationResponse) (*Server, 
 		return nil, errors.WithStackIf(err)
 	}
 
-	s.fs, err = filesystem.New(filepath.Join(config.Get().System.Data, s.ID()), s.DiskSpace(), s.Config().Egg.FileDenylist)
+	// The disk has to be mounted before the filesystem is opened. ufs holds a
+	// file descriptor on the data directory, and one opened before the mount
+	// would keep pointing at the empty directory underneath it.
+	if err = s.EnsureVirtualDisk(s.Context()); err != nil {
+		// A server that already has an image must not be quietly downgraded to
+		// a plain directory. It would come up looking empty while its real
+		// data sat unreachable inside the image, and anything it wrote next
+		// would land on the host volume underneath the mount point.
+		if s.HasVirtualDiskImage() {
+			return nil, errors.WrapIf(err, "manager: failed to prepare the server's virtual disk")
+		}
+
+		// Nothing has been created yet, so falling back costs nothing but the
+		// enforcement this node was hoping to get.
+		s.Log().WithField("error", err).
+			Error("could not create a virtual disk for this server; falling back to a plain directory, so its disk limit will not be enforced")
+	}
+
+	fs, err := filesystem.New(filepath.Join(config.Get().System.Data, s.ID()), s.DiskSpace(), s.Config().Egg.FileDenylist)
 	if err != nil {
 		return nil, errors.WithStackIf(err)
 	}
+	s.fs.Store(fs)
+
+	// On a virtual disk the kernel is the authority on usage, so replace the
+	// recursive directory walk with a statfs of the mount.
+	s.useVirtualDiskUsage()
 
 	// if quotas are enabled ensure quotas are configured
 	if config.Get().System.Quotas.Enabled {

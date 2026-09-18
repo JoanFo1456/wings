@@ -285,24 +285,40 @@ func deleteServer(c *gin.Context) {
 	pool := config.Get().System.Transfers.StoragePool
 	skipFileRemoval := pool.Enabled && pool.PoolName != "" && s.IsTransferring()
 	if !skipFileRemoval {
-	    go func(s *server.Server) {
-	    	fs := s.Filesystem()
-	    	p := fs.Path()
-	    	_ = fs.UnixFS().Close()
-	    	if err := os.RemoveAll(p); err != nil {
-	    		log.WithFields(log.Fields{"path": p, "error": err}).
-	    			Warn("failed to remove server files during deletion process")
-	    	}
+		go func(s *server.Server) {
+			fs := s.Filesystem()
+			p := fs.Path()
+			_ = fs.UnixFS().Close()
 
-	    	if config.Get().System.Quotas.Enabled {
-	    		if err = quotas.DelQuota(s.Config().Uuid); err != nil {
-	    			log.WithFields(log.Fields{"server_id": s.Config().Pid, "error": err}).
-	    				Warn("failed to remove quota during deletion process")
-	    		}
-	    	}
-	    }(s)
+			// A server on a virtual disk is deleted by unmounting it and
+			// discarding the image. Walking the tree instead would delete the
+			// files one at a time through a mount that then stays bound to an
+			// orphaned loop device, so the space is never actually returned.
+			//
+			// This runs unconditionally rather than only when the disk is
+			// mounted: an image left behind by a disk that failed to mount
+			// still holds its blocks, and nothing else would ever clean it up.
+			onVirtualDisk := s.UsesVirtualDisk()
+			if err := s.DestroyVirtualDisk(context.Background()); err != nil {
+				log.WithFields(log.Fields{"server_id": s.ID(), "error": err}).
+					Error("failed to destroy virtual disk during deletion process")
+			}
+
+			if !onVirtualDisk {
+				if err := os.RemoveAll(p); err != nil {
+					log.WithFields(log.Fields{"path": p, "error": err}).
+						Warn("failed to remove server files during deletion process")
+				}
+			}
+
+			if config.Get().System.Quotas.Enabled {
+				if err = quotas.DelQuota(s.Config().Uuid); err != nil {
+					log.WithFields(log.Fields{"server_id": s.Config().Pid, "error": err}).
+						Warn("failed to remove quota during deletion process")
+				}
+			}
+		}(s)
 	}
-
 
 	// remove hanging machine-id file for the server when removing
 	go func(s *server.Server) {

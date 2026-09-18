@@ -148,7 +148,7 @@ func (fs *Filesystem) updateCachedDiskUsage() (int64, error) {
 	// will have effectively no impact), or there is nothing in the cache, in which case we need to
 	// grab the size of their data directory. This is a taxing operation, so we want to store it in
 	// the cache once we've gotten it.
-	size, err := fs.DirectorySize("/")
+	size, err := fs.measureUsage()
 
 	// Always cache the size, even if there is an error. We want to always return that value
 	// so that we don't cause an endless loop of determining the disk size if there is a temporary
@@ -158,6 +158,23 @@ func (fs *Filesystem) updateCachedDiskUsage() (int64, error) {
 	fs.unixFS.SetUsage(size)
 
 	return size, err
+}
+
+// measureUsage returns the total bytes in use, preferring an installed usage
+// provider over walking the whole directory tree.
+func (fs *Filesystem) measureUsage() (int64, error) {
+	if p := fs.usageProvider.Load(); p != nil {
+		size, err := (*p)()
+		if err == nil {
+			return size, nil
+		}
+		// Fall back to the walk rather than reporting nothing: a provider that
+		// fails because a disk was unmounted underneath us should not make the
+		// server look empty and therefore infinitely writable.
+		log.WithField("root", fs.Path()).WithField("error", err).
+			Warn("failed to read disk usage from the usage provider, falling back to a directory walk")
+	}
+	return fs.DirectorySize("/")
 }
 
 // DirectorySize calculates the size of a directory and its descendants.
@@ -203,6 +220,31 @@ func (fs *Filesystem) DirectorySize(root string) (int64, error) {
 	return size.Load(), errors.WrapIf(err, "server/filesystem: directorysize: failed to walk directory")
 }
 
+// AvailableSpace returns how many more bytes may be written before the limit
+// is reached, or -1 when the filesystem has no limit at all.
+//
+// A stale usage value is accepted: this exists to bound an upload before it is
+// read, and being a little out of date is far better than blocking the request
+// on a disk usage lookup.
+func (fs *Filesystem) AvailableSpace() int64 {
+	limit := fs.MaxDisk()
+	if limit <= 0 {
+		return -1
+	}
+
+	usage, err := fs.DiskUsage(true)
+	if err != nil || usage < 0 {
+		usage = fs.CachedUsage()
+	}
+	if usage < 0 {
+		usage = 0
+	}
+	if usage >= limit {
+		return 0
+	}
+	return limit - usage
+}
+
 func (fs *Filesystem) HasSpaceFor(size int64) error {
 	if !fs.unixFS.CanFit(size) {
 		return newFilesystemError(ErrCodeDiskSpace, nil)
@@ -218,8 +260,15 @@ func (fs *Filesystem) reserveDisk(size int64) error {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 
-	if err := fs.HasSpaceFor(size); err != nil {
-		return err
+	// On a virtual disk the kernel refuses the write itself. Rejecting here as
+	// well would only replace the operating system's ENOSPC with an error of
+	// our own, which clients handle less gracefully, and it would do so a
+	// fraction earlier than the real limit for no benefit. Usage is still
+	// tracked, and checks made before a transfer begins still apply.
+	if !fs.kernelEnforced.Load() {
+		if err := fs.HasSpaceFor(size); err != nil {
+			return err
+		}
 	}
 	fs.unixFS.Add(size)
 	return nil

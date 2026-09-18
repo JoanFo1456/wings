@@ -30,6 +30,24 @@ type Filesystem struct {
 	diskCheckInterval time.Duration
 	denylist          *ignore.GitIgnore
 
+	// kernelEnforced marks a filesystem whose size limit the kernel applies
+	// itself, which is the case for a server on its own virtual disk.
+	//
+	// Wings still tracks usage there, for reporting and for checks made before
+	// a transfer starts, but it stops rejecting individual writes: the write
+	// is going to fail with ENOSPC from the operating system anyway, and
+	// letting that through gives the client a real "no space left on device"
+	// rather than a synthetic quota error Wings invented a moment earlier.
+	kernelEnforced atomic.Bool
+
+	// usageProvider, when set, replaces the recursive directory walk used to
+	// refresh cached disk usage.
+	//
+	// A server on a virtual disk has a filesystem to itself, so the kernel
+	// already knows exactly how much of it is in use. Asking it is both exact
+	// and free, where the walk is neither.
+	usageProvider atomic.Pointer[func() (int64, error)]
+
 	isTest bool
 }
 
@@ -51,6 +69,22 @@ func New(root string, size int64, denylist []string) (*Filesystem, error) {
 		lastLookupTime:    &usageLookupTime{},
 		denylist:          ignore.CompileIgnoreLines(denylist...),
 	}, nil
+}
+
+// SetKernelEnforced records whether the kernel applies this filesystem's limit
+// on its own.
+func (fs *Filesystem) SetKernelEnforced(enforced bool) {
+	fs.kernelEnforced.Store(enforced)
+}
+
+// SetUsageProvider installs a cheaper source of truth for disk usage, or
+// clears it again when passed nil.
+func (fs *Filesystem) SetUsageProvider(fn func() (int64, error)) {
+	if fn == nil {
+		fs.usageProvider.Store(nil)
+		return
+	}
+	fs.usageProvider.Store(&fn)
 }
 
 // Path returns the root path for the Filesystem instance.

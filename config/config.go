@@ -218,6 +218,23 @@ type SystemConfiguration struct {
 		Enabled bool `json:"enabled" yaml:"enabled" default:"false"`
 	} `json:"quotas" yaml:"quotas"`
 
+	// VirtualDisks gives every server a filesystem of its own, held in an ext4
+	// image mounted over a loop device, instead of a directory on the shared
+	// data volume.
+	//
+	// Wings otherwise tracks disk usage in userland, which cannot see writes
+	// the container makes directly into its bind-mounted data directory. A
+	// server can therefore exceed its allocation by any amount and is only
+	// stopped at its next boot. With a disk of its own the kernel refuses the
+	// write at the moment it happens, and usage becomes a statfs call rather
+	// than a walk over every file the server owns.
+	//
+	// There is deliberately no switch to turn this on or off. It is used
+	// wherever the host can support it and skipped where it cannot, because a
+	// switch only lets a node be configured into a state its kernel cannot
+	// honour — which surfaces later as a node that mysteriously does not work.
+	VirtualDisks VirtualDisks `json:"virtual_disks" yaml:"virtual_disks"`
+
 	// ActivitySendInterval is the amount of time that should ellapse between aggregated server activity
 	// being sent to the Panel. By default this will send activity collected over the last minute. Keep
 	// in mind that only a fixed number of activity log entries, defined by ActivitySendCount, will be sent
@@ -252,6 +269,55 @@ type SystemConfiguration struct {
 	Transfers Transfers `yaml:"transfers"`
 
 	OpenatMode string `default:"auto" yaml:"openat_mode"`
+}
+
+// VirtualDisks configures per-server ext4 images mounted over loop devices.
+//
+// Whether they are used at all is decided by the host, not by this struct:
+// these settings only shape disks on a node already capable of them.
+type VirtualDisks struct {
+	// Directory holds the backing image files. Keeping them outside the data
+	// directory matters: the images are mounted *over* paths inside Data, so
+	// storing them there would nest a disk's own backing file inside itself.
+	Directory string `json:"-" yaml:"directory" default:"/var/lib/pelican/disks"`
+
+	// OverheadPercent is how much larger than the server's allocation its
+	// image is created, leaving room for ext4 metadata so that a server sold
+	// 10 GiB can actually store 10 GiB.
+	OverheadPercent int `json:"overhead_percent" yaml:"overhead_percent" default:"5"`
+
+	// MountOptions are passed through to mount(2).
+	//
+	// discard is worth keeping: without it the blocks behind a deleted file
+	// stay allocated in the backing image, so images only ever grow towards
+	// their full size and the overcommit that makes this affordable stops
+	// working.
+	MountOptions string `json:"-" yaml:"mount_options" default:"noatime,nosuid,nodev,discard"`
+
+	// OperationTimeout bounds each mkfs, resize2fs or e2fsck run, in seconds.
+	OperationTimeout int `json:"-" yaml:"operation_timeout" default:"1800"`
+
+	// UnlimitedReserveMb is held back from the data filesystem when sizing an
+	// unlimited server's disk, so that a server which fills its "unlimited"
+	// allocation still leaves the node room to function.
+	//
+	// An unlimited server still gets a disk of its own, because the alternative
+	// is worse: it would keep a plain directory, and later giving it a real
+	// limit would leave that limit unenforced unless the data were migrated.
+	// Handing it a disk up front means applying a limit later is just a resize.
+	//
+	// The capacity itself is measured from the machine rather than configured,
+	// so it tracks the real volume and follows it if the node's disk is grown.
+	// The images are sparse, so an oversized disk costs nothing until written.
+	UnlimitedReserveMb int64 `json:"-" yaml:"unlimited_reserve_mb" default:"4096"`
+
+	// MigrateExisting moves a server whose data is still a plain directory
+	// into a virtual disk the first time Wings loads it.
+	//
+	// This copies every file the server owns, so a node full of large servers
+	// will take a long time to boot the first time it is switched on. It is
+	// off by default for that reason.
+	MigrateExisting bool `json:"-" yaml:"migrate_existing" default:"false"`
 }
 
 type CrashDetection struct {
@@ -669,6 +735,11 @@ func ConfigureDirectories() error {
 
 	log.WithField("path", _config.System.Data).Debug("ensuring server data directory exists")
 	if err := os.MkdirAll(_config.System.Data, 0o700); err != nil {
+		return err
+	}
+
+	log.WithField("path", _config.System.VirtualDisks.Directory).Debug("ensuring virtual disk image directory exists")
+	if err := os.MkdirAll(_config.System.VirtualDisks.Directory, 0o700); err != nil {
 		return err
 	}
 

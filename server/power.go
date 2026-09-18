@@ -185,9 +185,21 @@ func (s *Server) onBeforeStart() error {
 	// and process resource limits are correctly applied.
 	s.SyncWithEnvironment()
 
-	// If a server has unlimited disk space, we don't care enough to block the startup to check remaining.
-	// However, we should trigger a size anyway, as it'd be good to kick it off for other processes.
-	if config.Get().System.Quotas.Enabled {
+	// A server on a virtual disk has to have that disk mounted before the
+	// container starts, or it would write straight onto the host volume
+	// underneath the mount point.
+	onVirtualDisk, err := s.EnsureVirtualDiskMounted(s.Context())
+	if err != nil {
+		return err
+	}
+
+	switch {
+	case onVirtualDisk:
+		// No space check is needed or even meaningful. The server cannot have
+		// exceeded its allocation, because the kernel refuses the write that
+		// would take it past the end of its own disk.
+
+	case config.Get().System.Quotas.Enabled:
 		s.PublishConsoleOutputFromDaemon("checking disk space via quota, just a second")
 		// get used disk space
 		used, err := quotas.GetQuota(s.Config().Uuid)
@@ -199,14 +211,16 @@ func (s *Server) onBeforeStart() error {
 		if used >= s.DiskSpace() {
 			return errors.New("currently used disk space is more than allocated")
 		}
-	} else {
-		if s.DiskSpace() <= 0 {
-			s.Filesystem().HasSpaceAvailable(true)
-		} else {
-			s.PublishConsoleOutputFromDaemon("checking server disk space usage, this could take a few seconds...")
-			if err := s.Filesystem().HasSpaceErr(false); err != nil {
-				return err
-			}
+
+	// If a server has unlimited disk space, we don't care enough to block the startup to check remaining.
+	// However, we should trigger a size anyway, as it'd be good to kick it off for other processes.
+	case s.DiskSpace() <= 0:
+		s.Filesystem().HasSpaceAvailable(true)
+
+	default:
+		s.PublishConsoleOutputFromDaemon("checking server disk space usage, this could take a few seconds...")
+		if err := s.Filesystem().HasSpaceErr(false); err != nil {
+			return err
 		}
 	}
 

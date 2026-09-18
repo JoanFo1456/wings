@@ -589,6 +589,10 @@ func postServerChmodFile(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+// uploadEnvelopeAllowance is the slack added to an upload's size budget to
+// cover the multipart boundaries and part headers that travel with the files.
+const uploadEnvelopeAllowance = 1 << 20
+
 func postServerUploadFiles(c *gin.Context) {
 	manager := middleware.ExtractManager(c)
 
@@ -606,8 +610,43 @@ func postServerUploadFiles(c *gin.Context) {
 		return
 	}
 
+	// Bound the upload before the body is read.
+	//
+	// MultipartForm spools the request to temporary files on disk before it
+	// returns, so any check made on the parsed form runs only once the client
+	// has finished uploading and the data has already been written in full —
+	// to the node's own disk rather than the server's. A 700 MiB upload into a
+	// 500 MiB server would transfer completely and only then be refused.
+	//
+	// Content-Length lets us refuse without reading anything, but it is not
+	// always present: a chunked request does not carry one. MaxBytesReader
+	// covers that case by cutting the body off at the limit as it is read, so
+	// the transfer stops near the limit either way.
+	if free := s.Filesystem().AvailableSpace(); free >= 0 {
+		// Multipart boundaries and part headers ride along with the files, so
+		// allow a little slack rather than failing an upload that only just
+		// fits.
+		allowed := free + uploadEnvelopeAllowance
+
+		if length := c.Request.ContentLength; length > allowed {
+			c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, gin.H{
+				"error": "This server does not have enough available disk space to accept this upload.",
+			})
+			return
+		}
+
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, allowed)
+	}
+
 	form, err := c.MultipartForm()
 	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, gin.H{
+				"error": "This server does not have enough available disk space to accept this upload.",
+			})
+			return
+		}
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
 			"error": "Failed to get multipart form data from request.",
 		})
@@ -635,6 +674,17 @@ func postServerUploadFiles(c *gin.Context) {
 			return
 		}
 		totalSize += header.Size
+	}
+
+	// Check the whole batch before writing any of it. Filesystem.Write checks
+	// each file as it goes, so an oversized batch would otherwise land the
+	// first few files and fail partway through the rest, leaving the user with
+	// a half-finished upload to clean up by hand.
+	if err := s.Filesystem().HasSpaceFor(totalSize); err != nil {
+		c.AbortWithStatusJSON(http.StatusConflict, gin.H{
+			"error": "This server does not have enough available disk space to accept these files.",
+		})
+		return
 	}
 
 	for _, header := range headers {

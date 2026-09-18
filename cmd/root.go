@@ -182,6 +182,16 @@ func rootCmdRun(cmd *cobra.Command, _ []string) {
 		log.Info("quotas are supported and enabled")
 	}
 
+	// Virtual disks give each server a filesystem of its own so that the
+	// kernel enforces its disk limit. Whether they are used is decided here, by
+	// asking the host rather than by reading a setting.
+	if err := server.VirtualDisks().Supported(); err != nil {
+		log.WithField("reason", err.Error()).
+			Info("this host cannot provide virtual disks; servers will use plain directories and their disk limits will not be enforced by the kernel")
+	} else {
+		log.Info("virtual disks are supported; servers will each get a filesystem of their own")
+	}
+
 	manager, err := server.NewManager(cmd.Context(), pclient)
 	if err != nil {
 		log.WithField("error", err).Fatal("failed to load server configurations")

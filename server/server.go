@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"emperror.dev/errors"
@@ -50,7 +51,10 @@ type Server struct {
 	resources   ResourceUsage
 	Environment environment.ProcessEnvironment `json:"-"`
 
-	fs *filesystem.Filesystem
+	// fs is swapped out wholesale when a server's virtual disk is remounted,
+	// which happens when one is shrunk. Readers reach it through Filesystem()
+	// without holding the server lock, so the pointer itself has to be atomic.
+	fs atomic.Pointer[filesystem.Filesystem]
 
 	// Events emitted by the server instance.
 	emitter *events.Bus
@@ -275,7 +279,21 @@ func (s *Server) Sync() error {
 			return err
 		}
 	} else {
-		s.fs.SetDiskLimit(s.DiskSpace())
+		s.ApplyDiskLimit()
+	}
+
+	// Resize the server's own disk to match. This is a no-op unless the node
+	// uses virtual disks and the allocation actually changed.
+	//
+	// A failure here is reported but does not fail the sync. The Panel calls
+	// this whenever a server is edited, and the alternative is that saving any
+	// change at all throws a 500 in the admin UI because of a disk operation
+	// the operator did not ask for and cannot see. The server keeps the disk it
+	// has, which is the safe direction: it is never smaller than the data on
+	// it.
+	if err := s.ResizeVirtualDisk(s.Context()); err != nil {
+		s.Log().WithField("error", err).
+			Error("failed to resize the server's virtual disk; it keeps its previous size")
 	}
 
 	s.SyncWithEnvironment()
@@ -375,19 +393,20 @@ func (s *Server) ProcessConfiguration() *remote.ProcessConfiguration {
 
 // Filesystem returns an instance of the filesystem for this server.
 func (s *Server) Filesystem() *filesystem.Filesystem {
-	return s.fs
+	return s.fs.Load()
 }
 
 // EnsureDataDirectoryExists ensures that the data directory for the server
 // instance exists.
 func (s *Server) EnsureDataDirectoryExists() error {
-	if _, err := os.Lstat(s.fs.Path()); err != nil {
+	fs := s.Filesystem()
+	if _, err := os.Lstat(fs.Path()); err != nil {
 		if os.IsNotExist(err) {
 			s.Log().Debug("server: creating root directory and setting permissions")
-			if err := os.MkdirAll(s.fs.Path(), 0o700); err != nil {
+			if err := os.MkdirAll(fs.Path(), 0o700); err != nil {
 				return errors.WithStack(err)
 			}
-			if err := s.fs.Chown("/"); err != nil {
+			if err := fs.Chown("/"); err != nil {
 				s.Log().WithField("error", err).Warn("server: failed to chown server data directory")
 			}
 		} else {
