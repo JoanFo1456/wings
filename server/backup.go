@@ -11,6 +11,8 @@ import (
 	"github.com/docker/docker/client"
 
 	"github.com/pelican/wings/environment"
+	"github.com/pelican/wings/plugins"
+	"github.com/pelican/wings/plugins/api"
 	"github.com/pelican/wings/remote"
 	"github.com/pelican/wings/server/backup"
 )
@@ -67,6 +69,35 @@ func (s *Server) Backup(b backup.BackupInterface) error {
 		}
 	}
 
+	snapshot := s.PluginSnapshot()
+	request := api.BackupRequest{
+		Server:  snapshot,
+		UUID:    b.Identifier(),
+		Adapter: string(b.Adapter()),
+		Ignore:  ignored,
+	}
+
+	// Ask plugins before any files are read. A backup is expensive and
+	// competes with the running server for disk, so refusing one is a
+	// reasonable thing for a plugin to want to do.
+	if allow, reason := plugins.GateBackup(request); !allow {
+		s.Log().WithFields(log.Fields{"backup": b.Identifier(), "reason": reason}).
+			Info("a plugin refused this backup")
+
+		if err := s.notifyPanelOfBackup(b.Identifier(), &backup.ArchiveDetails{}, false); err != nil {
+			s.Log().WithField("error", err).Warn("failed to notify panel of refused backup state")
+		}
+
+		plugins.BackupCompleted(api.BackupOutcome{
+			Server:  snapshot,
+			UUID:    b.Identifier(),
+			Adapter: request.Adapter,
+			Error:   reason,
+		})
+
+		return errors.New(reason)
+	}
+
 	ad, err := b.Generate(s.Context(), s.Filesystem(), ignored)
 	if err != nil {
 		if err := s.notifyPanelOfBackup(b.Identifier(), &backup.ArchiveDetails{}, false); err != nil {
@@ -84,6 +115,13 @@ func (s *Server) Backup(b backup.BackupInterface) error {
 			"checksum":      "",
 			"checksum_type": "sha1",
 			"file_size":     0,
+		})
+
+		plugins.BackupCompleted(api.BackupOutcome{
+			Server:  snapshot,
+			UUID:    b.Identifier(),
+			Adapter: request.Adapter,
+			Error:   err.Error(),
 		})
 
 		return errors.WrapIf(err, "backup: error while generating server backup")
@@ -108,6 +146,15 @@ func (s *Server) Backup(b backup.BackupInterface) error {
 		"checksum":      ad.Checksum,
 		"checksum_type": "sha1",
 		"file_size":     ad.Size,
+	})
+
+	plugins.BackupCompleted(api.BackupOutcome{
+		Server:     snapshot,
+		UUID:       b.Identifier(),
+		Adapter:    request.Adapter,
+		Successful: true,
+		SizeBytes:  ad.Size,
+		Checksum:   ad.Checksum,
 	})
 
 	return nil

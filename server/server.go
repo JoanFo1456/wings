@@ -22,6 +22,8 @@ import (
 	"github.com/pelican/wings/config"
 	"github.com/pelican/wings/environment"
 	"github.com/pelican/wings/events"
+	"github.com/pelican/wings/plugins"
+	"github.com/pelican/wings/plugins/api"
 	"github.com/pelican/wings/remote"
 	"github.com/pelican/wings/server/filesystem"
 	"github.com/pelican/wings/system"
@@ -242,7 +244,7 @@ eloop:
 		out = append(out, fmt.Sprintf("%s=%s", strings.ToUpper(k), s.Config().EnvVars.Get(k)))
 	}
 
-	return out
+	return s.applyPluginStartup(out)
 }
 
 func (s *Server) Log() *log.Entry {
@@ -410,6 +412,13 @@ func (s *Server) OnStateChange() {
 	if prevState != s.Environment.State() {
 		s.Log().WithField("status", st).Debug("saw server status change event")
 		s.Events().Publish(StatusEvent, st)
+
+		plugins.Lifecycle(api.Lifecycle{
+			Server:        s.PluginSnapshot(),
+			Event:         api.ServerStateChanged,
+			PreviousState: prevState,
+			NewState:      st,
+		})
 	}
 
 	// Reset the resource usage to 0 when the process fully stops so that all the UI
