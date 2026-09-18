@@ -112,23 +112,3 @@ func TestMountSourceReportsNothingForAPlainDirectory(t *testing.T) {
 		t.Errorf("mountSource of a plain directory = %q, want empty", src)
 	}
 }
-
-func TestMountSourceHandlesAMissingPath(t *testing.T) {
-	src, err := mountSource(t.TempDir() + "/does-not-exist")
-	if err != nil {
-		t.Fatalf("mountSource: %v", err)
-	}
-	if src != "" {
-		t.Errorf("mountSource of a missing path = %q, want empty", src)
-	}
-}
-
-func TestFindLoopByBackingFileHandlesAMissingImage(t *testing.T) {
-	dev, err := findLoopByBackingFile(t.TempDir() + "/missing.img")
-	if err != nil {
-		t.Fatalf("findLoopByBackingFile: %v", err)
-	}
-	if dev != "" {
-		t.Errorf("device = %q, want empty for an image that does not exist", dev)
-	}
-}

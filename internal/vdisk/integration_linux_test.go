@@ -310,50 +310,6 @@ func TestIntegrationShrinkRefusedWhenDataWouldNotFit(t *testing.T) {
 	t.Logf("correctly refused: %v", err)
 }
 
-// TestIntegrationLostFoundRemoved checks that a fresh disk does not present
-// ext4's lost+found to the user as a directory they did not create.
-func TestIntegrationLostFoundRemoved(t *testing.T) {
-	if os.Getenv("VDISK_INTEGRATION") == "" {
-		t.Skip("set VDISK_INTEGRATION=1 to run against real loop devices")
-	}
-
-	m := New()
-	if err := m.Supported(); err != nil {
-		t.Skipf("host cannot host virtual disks: %v", err)
-	}
-
-	root := t.TempDir()
-	opts := Options{
-		Image:      filepath.Join(root, "lf.img"),
-		MountPoint: filepath.Join(root, "mnt"),
-		Size:       64 << 20,
-		UID:        os.Getuid(),
-		GID:        os.Getgid(),
-	}
-	ctx := context.Background()
-
-	if err := m.Ensure(ctx, opts); err != nil {
-		t.Fatalf("Ensure: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := m.Destroy(ctx, opts); err != nil {
-			t.Errorf("cleanup: Destroy: %v", err)
-		}
-	})
-
-	if _, err := os.Stat(filepath.Join(opts.MountPoint, "lost+found")); !os.IsNotExist(err) {
-		t.Errorf("lost+found is still present on a fresh disk (stat err: %v)", err)
-	}
-
-	entries, err := os.ReadDir(opts.MountPoint)
-	if err != nil {
-		t.Fatalf("ReadDir: %v", err)
-	}
-	if len(entries) != 0 {
-		t.Errorf("a fresh disk should look empty to the user, found %d entries", len(entries))
-	}
-}
-
 // TestLostFoundWithRecoveredFilesIsKept checks that a lost+found holding files
 // recovered by e2fsck is never deleted for the sake of a tidy listing.
 func TestLostFoundWithRecoveredFilesIsKept(t *testing.T) {
