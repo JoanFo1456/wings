@@ -201,9 +201,9 @@ func TestNoWebsocketLifecycleHooksWhenNoneRegistered(t *testing.T) {
 	bridge := newFakeBridge()
 	m, root := newTestManager(t, bridge)
 
-	// The recycler registers neither, so the guard the websocket path checks
+	// The fixture registers neither, so the guard the websocket path checks
 	// before building a snapshot must stay false.
-	enableTestPlugin(t, m, root, "recycler", recyclerManifest, recyclerSource)
+	enableTestPlugin(t, m, root, "fixture", fixtureManifest, fixtureSource)
 
 	if HasWebsocketLifecycleHooks() {
 		t.Error("a plugin registering neither hook should not turn the guard on")

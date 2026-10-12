@@ -7,26 +7,31 @@ import (
 	"github.com/pelican/wings/plugins/api"
 )
 
-// recyclerManifest and recyclerSource are a cut-down recycle bin, which is a
-// convenient shape for exercising the file gate's three outcomes: allow, deny,
-// and the plugin taking the operation over itself.
-const recyclerManifest = `{
-    "id": "recycler",
-    "name": "Recycler",
+// fixtureManifest and fixtureSource are a deliberately meaningless plugin.
+//
+// It exists to exercise the loader and the dispatch path, so it does the least
+// a plugin can while still reaching each of them: it reads a setting, decides a
+// file gate from it, and answers one route. It is shaped like nothing in
+// particular on purpose, so these tests check how Wings loads and dispatches
+// rather than how any real plugin happens to behave.
+//
+// The gate's three outcomes are driven by the "mode" setting, which is what
+// lets one fixture cover allow, deny and handled without branching on anything
+// domain-shaped.
+const fixtureManifest = `{
+    "id": "fixture",
+    "name": "Fixture",
     "author": "Tests",
     "version": "1.0.0",
     "category": "plugin",
-    "package": "recycler",
+    "package": "fixture",
     "meta": {"status": "not_installed", "load_order": 0}
 }`
 
-const recyclerSource = `
-package recycler
+const fixtureSource = `
+package fixture
 
 import (
-	"path"
-	"strings"
-
 	"github.com/pelican/wings/plugins/api"
 )
 
@@ -39,40 +44,28 @@ func (p *plugin) init(h api.Host) error {
 	return nil
 }
 
-func (p *plugin) directory() string {
-	return "/" + strings.Trim(p.host.Settings().String("directory", ".trash"), "/")
-}
-
 func (p *plugin) beforeFile(e api.FileEvent) api.FileDirective {
 	if e.Action != api.FileDelete {
 		return api.AllowFile()
 	}
 
-	dir := p.directory()
-	if e.Path == dir || strings.HasPrefix(e.Path, dir+"/") {
-		return api.AllowFile()
-	}
-
-	if !p.host.Settings().Bool("enabled", true) {
-		return api.AllowFile()
-	}
-
-	target := path.Join(dir, strings.TrimPrefix(e.Path, "/"))
-
-	if parent := path.Dir(target); parent != "/" && parent != "." {
-		if err := p.host.Files().CreateDirectory(e.Server.UUID, parent); err != nil {
-			return api.DenyFile("could not prepare the trash: " + err.Error())
+	switch p.host.Settings().String("mode", "allow") {
+	case "deny":
+		return api.DenyFile("the mode setting says no")
+	case "handle":
+		// Taking the operation over means actually doing something, so the
+		// test can tell a real handover from a claim of one.
+		if err := p.host.Files().Write(e.Server.UUID, e.Path+".handled", []byte("handled")); err != nil {
+			return api.DenyFile("could not record the handover: " + err.Error())
 		}
-	}
-	if err := p.host.Files().Rename(e.Server.UUID, e.Path, target); err != nil {
-		return api.DenyFile("could not move this into the trash: " + err.Error())
+		return api.FileHandled()
 	}
 
-	return api.FileHandled()
+	return api.AllowFile()
 }
 
-func (p *plugin) list(r api.Request) api.Response {
-	return api.Text(200, "trash for "+r.Server.Name)
+func (p *plugin) route(r api.Request) api.Response {
+	return api.Text(200, "server:"+r.Server.Name)
 }
 
 func New() api.Registration {
@@ -81,11 +74,10 @@ func New() api.Registration {
 		Init:             p.init,
 		BeforeFileAction: p.beforeFile,
 		Settings: []api.Setting{
-			{Key: "directory", Type: api.SettingString, Default: ".trash"},
-			{Key: "enabled", Type: api.SettingBoolean, Default: true},
+			{Key: "mode", Type: api.SettingString, Default: "allow"},
 		},
 		Routes: []api.Route{
-			{Method: "GET", Path: "/", ServerScoped: true, Handler: p.list},
+			{Method: "GET", Path: "/", ServerScoped: true, Handler: p.route},
 		},
 	}
 }
@@ -110,7 +102,7 @@ func enableTestPlugin(t *testing.T, m *Manager, root, id, manifest, source strin
 	}
 
 	if err := m.Install(id, true); err != nil {
-		t.Fatalf("Install: %v", err)
+		t.Fatalf("Install: %v (%s)", err, inst.Manifest().Meta.StatusMessage)
 	}
 	if got := inst.Status(); got != StatusEnabled {
 		t.Fatalf("after installing with enable the status should be enabled, got %q (%s)",
@@ -123,68 +115,63 @@ func enableTestPlugin(t *testing.T, m *Manager, root, id, manifest, source strin
 	return inst
 }
 
-func TestPluginLoadsFromSourceAndHandlesDeletes(t *testing.T) {
+// enableFixture installs the fixture plugin with its gate in the given mode.
+func enableFixture(t *testing.T, m *Manager, root, mode string) *Instance {
+	t.Helper()
+
+	inst := enableTestPlugin(t, m, root, "fixture", fixtureManifest, fixtureSource)
+
+	if mode != "" {
+		if err := m.SaveSettings("fixture", map[string]any{"mode": mode}); err != nil {
+			t.Fatalf("SaveSettings: %v", err)
+		}
+	}
+	return inst
+}
+
+func TestPluginLoadsFromSourceAndIsDispatchedTo(t *testing.T) {
 	bridge := newFakeBridge()
 	server := testServer()
 	bridge.addServer(server)
-	bridge.putFile(server.UUID, "/plugins/foo.jar", []byte("jar contents"))
+	bridge.putFile(server.UUID, "/some/file.txt", []byte("contents"))
 
 	m, root := newTestManager(t, bridge)
-	enableTestPlugin(t, m, root, "recycler", recyclerManifest, recyclerSource)
+	enableFixture(t, m, root, "handle")
 
-	// A delete is taken over by the plugin: allowed, reported as handled, and
-	// the file has moved rather than gone.
 	allow, handled, reason := GateFileAction(api.FileEvent{
 		Server: server,
 		Action: api.FileDelete,
-		Path:   "/plugins/foo.jar",
-		Size:   12,
+		Path:   "/some/file.txt",
 		User:   "operator",
 	})
 
 	if !allow {
-		t.Fatalf("the delete should have been allowed, but was refused: %s", reason)
+		t.Fatalf("the plugin did not deny, so the action should be allowed: %s", reason)
 	}
 	if !handled {
-		t.Fatal("the plugin should have reported the delete as handled, so Wings skips it")
+		t.Fatal("the plugin reported the action as handled, so Wings should skip its own work")
 	}
 
-	paths := bridge.paths(server.UUID)
-	if len(paths) != 1 || paths[0] != "/.trash/plugins/foo.jar" {
-		t.Fatalf("the file should have moved into the mirrored trash path, got %v", paths)
-	}
-
-	content, err := bridge.FileRead(server.UUID, "/.trash/plugins/foo.jar")
-	if err != nil {
-		t.Fatalf("the trashed file should be readable: %v", err)
-	}
-	if string(content) != "jar contents" {
-		t.Fatalf("the trashed file's contents changed: %q", content)
+	// Handing over means the plugin actually acted, not merely claimed to.
+	if _, err := bridge.FileRead(server.UUID, "/some/file.txt.handled"); err != nil {
+		t.Fatalf("the plugin should have acted through the host, paths are %v", bridge.paths(server.UUID))
 	}
 }
 
-func TestDeleteInsideTrashIsNotIntercepted(t *testing.T) {
+func TestGateAllowsWhenThePluginDoesNotObject(t *testing.T) {
 	bridge := newFakeBridge()
 	server := testServer()
 	bridge.addServer(server)
-	bridge.putFile(server.UUID, "/.trash/old.jar", []byte("old"))
 
 	m, root := newTestManager(t, bridge)
-	enableTestPlugin(t, m, root, "recycler", recyclerManifest, recyclerSource)
+	enableFixture(t, m, root, "allow")
 
-	// Emptying the trash has to keep working, so a delete inside it must fall
-	// through to Wings rather than being moved again.
 	allow, handled, reason := GateFileAction(api.FileEvent{
-		Server: server,
-		Action: api.FileDelete,
-		Path:   "/.trash/old.jar",
+		Server: server, Action: api.FileDelete, Path: "/some/file.txt",
 	})
 
-	if !allow {
-		t.Fatalf("deleting from inside the trash should be allowed: %s", reason)
-	}
-	if handled {
-		t.Fatal("deleting from inside the trash should not be handled by the plugin, or the trash could never be emptied")
+	if !allow || handled {
+		t.Fatalf("expected a plain allow, got allow=%v handled=%v reason=%q", allow, handled, reason)
 	}
 }
 
@@ -192,19 +179,19 @@ func TestNonDeleteActionsPassStraightThrough(t *testing.T) {
 	bridge := newFakeBridge()
 	server := testServer()
 	bridge.addServer(server)
-	bridge.putFile(server.UUID, "/server.properties", []byte("motd=hi"))
 
 	m, root := newTestManager(t, bridge)
-	enableTestPlugin(t, m, root, "recycler", recyclerManifest, recyclerSource)
+
+	// Even with the gate set to refuse, the plugin only looks at deletes, so
+	// everything else must be untouched.
+	enableFixture(t, m, root, "deny")
 
 	for _, action := range []api.FileAction{api.FileWrite, api.FileRename, api.FileChmod, api.FileRead} {
 		allow, handled, reason := GateFileAction(api.FileEvent{
-			Server: server,
-			Action: action,
-			Path:   "/server.properties",
+			Server: server, Action: action, Path: "/server.properties",
 		})
 		if !allow || handled {
-			t.Fatalf("%s should pass through untouched, got allow=%v handled=%v reason=%q",
+			t.Errorf("%s should pass through untouched, got allow=%v handled=%v reason=%q",
 				action, allow, handled, reason)
 		}
 	}
@@ -214,24 +201,22 @@ func TestGateDenialIsAttributedToThePlugin(t *testing.T) {
 	bridge := newFakeBridge()
 	server := testServer()
 	bridge.addServer(server)
-	// No file on disk, so the plugin's rename fails and it denies.
+
 	m, root := newTestManager(t, bridge)
-	enableTestPlugin(t, m, root, "recycler", recyclerManifest, recyclerSource)
+	enableFixture(t, m, root, "deny")
 
 	allow, handled, reason := GateFileAction(api.FileEvent{
-		Server: server,
-		Action: api.FileDelete,
-		Path:   "/missing.jar",
+		Server: server, Action: api.FileDelete, Path: "/some/file.txt",
 	})
 
 	if allow {
-		t.Fatal("the plugin denied the delete, so it should not be allowed")
+		t.Fatal("the plugin denied the action, so it should not be allowed")
 	}
 	if handled {
 		t.Fatal("a denied action is not a handled one")
 	}
-	// The user needs to know which plugin stopped them.
-	if !strings.HasPrefix(reason, "Recycler: ") {
+	// Whoever triggered the action needs to know which plugin stopped them.
+	if !strings.HasPrefix(reason, "Fixture: ") {
 		t.Fatalf("the denial should name the plugin, got %q", reason)
 	}
 }
@@ -240,19 +225,19 @@ func TestDisableStopsDispatchWithoutRestart(t *testing.T) {
 	bridge := newFakeBridge()
 	server := testServer()
 	bridge.addServer(server)
-	bridge.putFile(server.UUID, "/a.jar", []byte("a"))
-	bridge.putFile(server.UUID, "/b.jar", []byte("b"))
+	bridge.putFile(server.UUID, "/a.txt", []byte("a"))
+	bridge.putFile(server.UUID, "/b.txt", []byte("b"))
 
 	m, root := newTestManager(t, bridge)
-	inst := enableTestPlugin(t, m, root, "recycler", recyclerManifest, recyclerSource)
+	inst := enableFixture(t, m, root, "handle")
 
 	if _, handled, _ := GateFileAction(api.FileEvent{
-		Server: server, Action: api.FileDelete, Path: "/a.jar",
+		Server: server, Action: api.FileDelete, Path: "/a.txt",
 	}); !handled {
-		t.Fatal("the enabled plugin should handle the delete")
+		t.Fatal("the enabled plugin should handle the action")
 	}
 
-	if err := m.Disable("recycler"); err != nil {
+	if err := m.Disable("fixture"); err != nil {
 		t.Fatalf("Disable: %v", err)
 	}
 	if got := inst.Status(); got != StatusDisabled {
@@ -265,68 +250,58 @@ func TestDisableStopsDispatchWithoutRestart(t *testing.T) {
 	// The whole point of interpreting plugins rather than linking them is that
 	// this takes effect now, with no restart.
 	if _, handled, _ := GateFileAction(api.FileEvent{
-		Server: server, Action: api.FileDelete, Path: "/b.jar",
+		Server: server, Action: api.FileDelete, Path: "/b.txt",
 	}); handled {
 		t.Fatal("a disabled plugin must not receive hooks any more")
 	}
 
-	// And enabling it again brings it back.
-	if err := m.Enable("recycler"); err != nil {
+	if err := m.Enable("fixture"); err != nil {
 		t.Fatalf("Enable: %v", err)
 	}
 	if _, handled, _ := GateFileAction(api.FileEvent{
-		Server: server, Action: api.FileDelete, Path: "/b.jar",
+		Server: server, Action: api.FileDelete, Path: "/b.txt",
 	}); !handled {
 		t.Fatal("a re-enabled plugin should receive hooks again")
 	}
 }
 
-func TestSettingsAreReadLiveFromTheManifest(t *testing.T) {
+func TestSettingsAreReadLiveWithoutReloading(t *testing.T) {
 	bridge := newFakeBridge()
 	server := testServer()
 	bridge.addServer(server)
-	bridge.putFile(server.UUID, "/a.jar", []byte("a"))
-	bridge.putFile(server.UUID, "/b.jar", []byte("b"))
+	bridge.putFile(server.UUID, "/a.txt", []byte("a"))
 
 	m, root := newTestManager(t, bridge)
-	enableTestPlugin(t, m, root, "recycler", recyclerManifest, recyclerSource)
+	enableFixture(t, m, root, "deny")
 
-	// Point the plugin at a different folder and confirm the next delete lands
-	// there, without the plugin being reloaded.
-	if err := m.SaveSettings("recycler", map[string]any{"directory": ".bin"}); err != nil {
+	if allow, _, _ := GateFileAction(api.FileEvent{
+		Server: server, Action: api.FileDelete, Path: "/a.txt",
+	}); allow {
+		t.Fatal("the plugin should be refusing while the mode says so")
+	}
+
+	// Change the setting and the very next call behaves differently, with no
+	// reload in between.
+	if err := m.SaveSettings("fixture", map[string]any{"mode": "allow"}); err != nil {
 		t.Fatalf("SaveSettings: %v", err)
 	}
 
-	if _, handled, _ := GateFileAction(api.FileEvent{
-		Server: server, Action: api.FileDelete, Path: "/a.jar",
-	}); !handled {
-		t.Fatal("the delete should still be handled after a settings change")
-	}
-
-	if _, err := bridge.FileRead(server.UUID, "/.bin/a.jar"); err != nil {
-		t.Fatalf("the new setting should have been used, but /.bin/a.jar is missing: %v", err)
-	}
-
-	// Turning the plugin off through its own settings leaves it enabled but
-	// makes it decline to act, which is different from disabling it.
-	if err := m.SaveSettings("recycler", map[string]any{"enabled": false}); err != nil {
-		t.Fatalf("SaveSettings: %v", err)
-	}
-	if _, handled, _ := GateFileAction(api.FileEvent{
-		Server: server, Action: api.FileDelete, Path: "/b.jar",
-	}); handled {
-		t.Fatal("with its enabled setting off the plugin should decline to handle deletes")
+	if allow, handled, reason := GateFileAction(api.FileEvent{
+		Server: server, Action: api.FileDelete, Path: "/a.txt",
+	}); !allow || handled {
+		t.Fatalf("the new setting should have taken effect, got allow=%v handled=%v reason=%q",
+			allow, handled, reason)
 	}
 }
 
 func TestSaveSettingsRejectsUndeclaredKeys(t *testing.T) {
 	bridge := newFakeBridge()
 	m, root := newTestManager(t, bridge)
-	enableTestPlugin(t, m, root, "recycler", recyclerManifest, recyclerSource)
+	enableFixture(t, m, root, "")
 
-	err := m.SaveSettings("recycler", map[string]any{"not_a_real_setting": 1})
+	err := m.SaveSettings("fixture", map[string]any{"not_a_real_setting": 1})
 	if err == nil {
-		t.Fatal("saving a setting the manifest does not declare should fail")
+		t.Fatal("saving a setting the plugin does not declare should fail")
 	}
 	if !strings.Contains(err.Error(), "not_a_real_setting") {
 		t.Fatalf("the error should name the offending key, got %q", err)
@@ -339,9 +314,9 @@ func TestServerScopedRouteIsResolvedAndInvoked(t *testing.T) {
 	bridge.addServer(server)
 
 	m, root := newTestManager(t, bridge)
-	inst := enableTestPlugin(t, m, root, "recycler", recyclerManifest, recyclerSource)
+	inst := enableFixture(t, m, root, "")
 
-	found, route, _, ok := m.FindRoute("recycler", "GET", "/", true)
+	found, route, _, ok := m.FindRoute("fixture", "GET", "/", true)
 	if !ok {
 		t.Fatal("the plugin's server scoped route should be resolvable")
 	}
@@ -358,20 +333,20 @@ func TestServerScopedRouteIsResolvedAndInvoked(t *testing.T) {
 	if res.Status != 200 {
 		t.Fatalf("the handler should have returned 200, got %d", res.Status)
 	}
-	if string(res.Body) != "trash for Survival" {
+	if string(res.Body) != "server:Survival" {
 		t.Fatalf("the handler got the wrong server, body was %q", res.Body)
 	}
 
 	// A node scoped lookup must not find a server scoped route.
-	if _, _, _, ok := m.FindRoute("recycler", "GET", "/", false); ok {
+	if _, _, _, ok := m.FindRoute("fixture", "GET", "/", false); ok {
 		t.Fatal("a server scoped route should not answer a node scoped request")
 	}
 
 	// And a disabled plugin answers nothing.
-	if err := m.Disable("recycler"); err != nil {
+	if err := m.Disable("fixture"); err != nil {
 		t.Fatalf("Disable: %v", err)
 	}
-	if _, _, _, ok := m.FindRoute("recycler", "GET", "/", true); ok {
+	if _, _, _, ok := m.FindRoute("fixture", "GET", "/", true); ok {
 		t.Fatal("a disabled plugin's routes should no longer resolve")
 	}
 }
