@@ -43,6 +43,28 @@ type Bridge interface {
 	FileList(uuid, path string) ([]api.DirEntry, error)
 	FileExists(uuid, path string) (bool, error)
 
+	// FileStat describes one path on a server.
+	FileStat(uuid, path string) (api.DirEntry, error)
+
+	// FileCopy duplicates a file or directory beside itself.
+	FileCopy(uuid, path string) (string, error)
+
+	// FileCompress packs entries of a directory into a new archive there.
+	FileCompress(uuid, directory string, names []string, opts api.CompressOptions) (string, error)
+
+	// FileSpace reports a server's disk usage against its limit.
+	FileSpace(uuid string) (api.DiskSpace, error)
+
+	// FileDownload fetches a URL onto a server's disk.
+	FileDownload(uuid string, req api.DownloadRequest) (api.DownloadResult, error)
+
+	// FileDownloadMany fetches several URLs concurrently.
+	FileDownloadMany(uuid string, reqs []api.DownloadRequest, concurrency int) ([]api.DownloadResult, error)
+
+	// FileDecompress extracts an archive already on a server's disk, beside
+	// the archive itself.
+	FileDecompress(uuid, archive string) error
+
 	// FileDigest hashes a file on the node, computing every requested digest
 	// without handing the contents to the caller.
 	FileDigest(uuid, path string, requests []api.DigestRequest) (map[string]string, error)

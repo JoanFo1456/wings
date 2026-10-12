@@ -76,6 +76,7 @@ func init() {
 		"BackupResult":        reflect.ValueOf((*api.BackupResult)(nil)),
 		"Command":             reflect.ValueOf((*api.Command)(nil)),
 		"CommandDirective":    reflect.ValueOf((*api.CommandDirective)(nil)),
+		"CompressOptions":     reflect.ValueOf((*api.CompressOptions)(nil)),
 		"ConfigFile":          reflect.ValueOf((*api.ConfigFile)(nil)),
 		"ConsoleDirective":    reflect.ValueOf((*api.ConsoleDirective)(nil)),
 		"ConsoleLine":         reflect.ValueOf((*api.ConsoleLine)(nil)),
@@ -85,6 +86,9 @@ func init() {
 		"Decision":            reflect.ValueOf((*api.Decision)(nil)),
 		"DigestRequest":       reflect.ValueOf((*api.DigestRequest)(nil)),
 		"DirEntry":            reflect.ValueOf((*api.DirEntry)(nil)),
+		"DiskSpace":           reflect.ValueOf((*api.DiskSpace)(nil)),
+		"DownloadRequest":     reflect.ValueOf((*api.DownloadRequest)(nil)),
+		"DownloadResult":      reflect.ValueOf((*api.DownloadResult)(nil)),
 		"Events":              reflect.ValueOf((*api.Events)(nil)),
 		"ExecOptions":         reflect.ValueOf((*api.ExecOptions)(nil)),
 		"ExecResult":          reflect.ValueOf((*api.ExecResult)(nil)),
@@ -162,27 +166,49 @@ func (W _github_com_pelican_wings_plugins_api_Fetcher) Do(method string, url str
 type _github_com_pelican_wings_plugins_api_Files struct {
 	IValue           interface{}
 	WChmod           func(uuid string, path string, mode uint32) error
+	WCompress        func(uuid string, directory string, names []string, opts api.CompressOptions) (string, error)
+	WCopy            func(uuid string, path string) (string, error)
 	WCreateDirectory func(uuid string, path string) error
+	WDecompress      func(uuid string, archive string) error
 	WDelete          func(uuid string, path string) error
 	WDigest          func(uuid string, path string, requests []api.DigestRequest) (map[string]string, error)
+	WDownload        func(uuid string, req api.DownloadRequest) (api.DownloadResult, error)
+	WDownloadMany    func(uuid string, reqs []api.DownloadRequest, concurrency int) ([]api.DownloadResult, error)
 	WExists          func(uuid string, path string) (bool, error)
 	WList            func(uuid string, path string) ([]api.DirEntry, error)
 	WRead            func(uuid string, path string) ([]byte, error)
 	WRename          func(uuid string, from string, to string) error
+	WSpace           func(uuid string) (api.DiskSpace, error)
+	WStat            func(uuid string, path string) (api.DirEntry, error)
 	WWrite           func(uuid string, path string, content []byte) error
 }
 
 func (W _github_com_pelican_wings_plugins_api_Files) Chmod(uuid string, path string, mode uint32) error {
 	return W.WChmod(uuid, path, mode)
 }
+func (W _github_com_pelican_wings_plugins_api_Files) Compress(uuid string, directory string, names []string, opts api.CompressOptions) (string, error) {
+	return W.WCompress(uuid, directory, names, opts)
+}
+func (W _github_com_pelican_wings_plugins_api_Files) Copy(uuid string, path string) (string, error) {
+	return W.WCopy(uuid, path)
+}
 func (W _github_com_pelican_wings_plugins_api_Files) CreateDirectory(uuid string, path string) error {
 	return W.WCreateDirectory(uuid, path)
+}
+func (W _github_com_pelican_wings_plugins_api_Files) Decompress(uuid string, archive string) error {
+	return W.WDecompress(uuid, archive)
 }
 func (W _github_com_pelican_wings_plugins_api_Files) Delete(uuid string, path string) error {
 	return W.WDelete(uuid, path)
 }
 func (W _github_com_pelican_wings_plugins_api_Files) Digest(uuid string, path string, requests []api.DigestRequest) (map[string]string, error) {
 	return W.WDigest(uuid, path, requests)
+}
+func (W _github_com_pelican_wings_plugins_api_Files) Download(uuid string, req api.DownloadRequest) (api.DownloadResult, error) {
+	return W.WDownload(uuid, req)
+}
+func (W _github_com_pelican_wings_plugins_api_Files) DownloadMany(uuid string, reqs []api.DownloadRequest, concurrency int) ([]api.DownloadResult, error) {
+	return W.WDownloadMany(uuid, reqs, concurrency)
 }
 func (W _github_com_pelican_wings_plugins_api_Files) Exists(uuid string, path string) (bool, error) {
 	return W.WExists(uuid, path)
@@ -195,6 +221,12 @@ func (W _github_com_pelican_wings_plugins_api_Files) Read(uuid string, path stri
 }
 func (W _github_com_pelican_wings_plugins_api_Files) Rename(uuid string, from string, to string) error {
 	return W.WRename(uuid, from, to)
+}
+func (W _github_com_pelican_wings_plugins_api_Files) Space(uuid string) (api.DiskSpace, error) {
+	return W.WSpace(uuid)
+}
+func (W _github_com_pelican_wings_plugins_api_Files) Stat(uuid string, path string) (api.DirEntry, error) {
+	return W.WStat(uuid, path)
 }
 func (W _github_com_pelican_wings_plugins_api_Files) Write(uuid string, path string, content []byte) error {
 	return W.WWrite(uuid, path, content)

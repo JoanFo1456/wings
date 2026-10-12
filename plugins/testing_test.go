@@ -53,6 +53,19 @@ type fakeBridge struct {
 	execResult *api.ExecResult
 	execErr    error
 
+	downloads []string
+
+	// diskLimit is what FileSpace reports as the ceiling. Zero means the
+	// server is unlimited, which is a case plugins have to handle.
+	diskLimit int64
+
+	// downloadErrors makes a named URL fail, for testing a partial batch.
+	downloadErrors map[string]string
+
+	// archives says what a given archive expands to, keyed by the archive's
+	// path and then by the name of each file inside it.
+	archives map[string]map[string][]byte
+
 	console   []string
 	activity  []string
 	published []string
@@ -60,8 +73,10 @@ type fakeBridge struct {
 
 func newFakeBridge() *fakeBridge {
 	return &fakeBridge{
-		servers: map[string]api.Server{},
-		files:   map[string]map[string][]byte{},
+		servers:        map[string]api.Server{},
+		files:          map[string]map[string][]byte{},
+		downloadErrors: map[string]string{},
+		archives:       map[string]map[string][]byte{},
 	}
 }
 
@@ -324,6 +339,146 @@ func (b *fakeBridge) FileExists(uuid, p string) (bool, error) {
 	defer b.mu.Unlock()
 	_, ok := b.files[uuid][normalize(p)]
 	return ok, nil
+}
+
+func (b *fakeBridge) FileStat(uuid, p string) (api.DirEntry, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	content, ok := b.files[uuid][normalize(p)]
+	if !ok {
+		return api.DirEntry{}, os.ErrNotExist
+	}
+
+	return api.DirEntry{
+		Name:      path.Base(normalize(p)),
+		Size:      int64(len(content)),
+		Directory: content == nil,
+	}, nil
+}
+
+func (b *fakeBridge) FileCopy(uuid, p string) (string, error) {
+	b.record("copy " + p)
+
+	content, err := b.FileRead(uuid, p)
+	if err != nil {
+		return "", err
+	}
+
+	// Mirror the real one's contract: Wings picks a free name beside the
+	// original and reports where it went.
+	dir, base := path.Dir(normalize(p)), path.Base(normalize(p))
+	ext := path.Ext(base)
+	target := path.Join(dir, strings.TrimSuffix(base, ext)+" copy"+ext)
+
+	b.putFile(uuid, target, content)
+	return target, nil
+}
+
+func (b *fakeBridge) FileCompress(uuid, directory string, names []string, opts api.CompressOptions) (string, error) {
+	b.record("compress " + directory + " " + strings.Join(names, ","))
+
+	if len(names) == 0 {
+		return "", errors.New("fake bridge: nothing to compress")
+	}
+
+	name := opts.Name
+	if name == "" {
+		name = "archive"
+	}
+
+	ext := ".tar.gz"
+	switch opts.Format {
+	case "zip":
+		ext = ".zip"
+	case "tar.bz2":
+		ext = ".tar.bz2"
+	case "tar.xz":
+		ext = ".tar.xz"
+	}
+
+	target := path.Join(directory, name+ext)
+	b.putFile(uuid, target, []byte("archive of "+strings.Join(names, ",")))
+	return target, nil
+}
+
+func (b *fakeBridge) FileSpace(uuid string) (api.DiskSpace, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	var used int64
+	for _, content := range b.files[uuid] {
+		used += int64(len(content))
+	}
+
+	return api.DiskSpace{UsedBytes: used, LimitBytes: b.diskLimit}, nil
+}
+
+// FileDownload records the request and writes a stand-in file, so a plugin
+// under test can be checked on what it asked the node to fetch without this
+// reaching the network.
+func (b *fakeBridge) FileDownload(uuid string, req api.DownloadRequest) (api.DownloadResult, error) {
+	b.record("download " + req.URL)
+
+	b.mu.Lock()
+	b.downloads = append(b.downloads, req.URL)
+	failure := b.downloadErrors[req.URL]
+	b.mu.Unlock()
+
+	if failure != "" {
+		return api.DownloadResult{URL: req.URL}, errors.New(failure)
+	}
+
+	name := req.FileName
+	if name == "" {
+		name = path.Base(req.URL)
+	}
+
+	dir := req.Directory
+	if dir == "" {
+		dir = "/"
+	}
+
+	full := path.Join(dir, name)
+	body := []byte("downloaded:" + req.URL)
+	b.putFile(uuid, full, body)
+
+	return api.DownloadResult{URL: req.URL, Path: full, Bytes: int64(len(body))}, nil
+}
+
+// FileDownloadMany mirrors the real one's contract: a result per request, in
+// order, each carrying its own error so one failure does not sink the batch.
+func (b *fakeBridge) FileDownloadMany(uuid string, reqs []api.DownloadRequest, concurrency int) ([]api.DownloadResult, error) {
+	results := make([]api.DownloadResult, len(reqs))
+
+	for i, req := range reqs {
+		result, err := b.FileDownload(uuid, req)
+		if err != nil {
+			result.URL = req.URL
+			result.Error = err.Error()
+		}
+		results[i] = result
+	}
+	return results, nil
+}
+
+func (b *fakeBridge) FileDecompress(uuid, archive string) error {
+	b.record("decompress " + archive)
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if _, ok := b.files[uuid][normalize(archive)]; !ok {
+		return os.ErrNotExist
+	}
+
+	// Stand in for extraction by writing whatever the test said the archive
+	// contains, beside it, which is where Wings extracts.
+	dir := path.Dir(normalize(archive))
+	for name, body := range b.archives[normalize(archive)] {
+		b.files[uuid][normalize(path.Join(dir, name))] = body
+	}
+	return nil
 }
 
 // FileDigest mirrors what the real bridge computes natively, so a plugin under

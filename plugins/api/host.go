@@ -162,6 +162,61 @@ type Files interface {
 	// Exists reports whether a path exists, without reading it.
 	Exists(uuid, path string) (bool, error)
 
+	// Stat describes one path without listing its parent, which is the cheap
+	// way to ask how big something is or when it changed.
+	Stat(uuid, path string) (DirEntry, error)
+
+	// Copy duplicates a file or directory. Wings picks a free name beside the
+	// original, the same way the file manager's copy does, and returns where
+	// it put it.
+	Copy(uuid, path string) (string, error)
+
+	// Compress packs the named entries of a directory into a new archive in
+	// that same directory, and returns the archive's path.
+	//
+	// Entries the egg's denylist covers are skipped, and an archive with
+	// nothing left to pack is an error rather than an empty file.
+	Compress(uuid, directory string, names []string, opts CompressOptions) (string, error)
+
+	// Space reports the server's disk usage against its limit, so a plugin
+	// can decide whether something large is worth starting.
+	Space(uuid string) (DiskSpace, error)
+
+	// Download fetches a URL straight onto the server's disk.
+	//
+	// The bytes never pass through the plugin or the Panel: Wings streams them
+	// from the source to the server's data directory, with the same disk
+	// accounting a user's upload gets. That is the difference that matters for
+	// anything bulky, where routing a file through the Panel means moving it
+	// twice.
+	//
+	// Wings refuses a URL that resolves to the local network, follows a bounded
+	// number of redirects, and declines entirely when the node has remote
+	// downloads switched off.
+	Download(uuid string, req DownloadRequest) (DownloadResult, error)
+
+	// DownloadMany fetches several URLs at once, returning a result per
+	// request in the order they were given.
+	//
+	// One failure does not sink the batch: each result carries its own error,
+	// because a modpack with one dead link should still install the other two
+	// hundred mods and say which one was missing.
+	//
+	// Concurrency is how many run at once, clamped by Wings to something the
+	// node can stand. Pass zero for the default.
+	DownloadMany(uuid string, reqs []DownloadRequest, concurrency int) ([]DownloadResult, error)
+
+	// Decompress extracts an archive that is already on the server's disk,
+	// into the directory the archive itself is in.
+	//
+	// There is no separate destination because Wings has none: extraction
+	// always lands beside the archive. Move or rename afterwards if the
+	// contents belong somewhere else.
+	//
+	// The expanded size is checked against the server's disk limit before
+	// anything is written, so an archive cannot fill the disk on the way out.
+	Decompress(uuid, archive string) error
+
 	// Digest hashes a file on the node and returns the results, without the
 	// contents ever reaching the plugin.
 	//
@@ -174,6 +229,80 @@ type Files interface {
 	// Results are keyed by each request's Name, falling back to its
 	// Algorithm.
 	Digest(uuid, path string, requests []DigestRequest) (map[string]string, error)
+}
+
+// CompressOptions shapes a new archive. The zero value is a gzipped tar with
+// a generated, timestamped name.
+type CompressOptions struct {
+	// Name is the archive's name without an extension, which Wings appends to
+	// match the format. Empty gets a generated name.
+	Name string
+
+	// Format is one of zip, tar.gz, tar.bz2 or tar.xz. Anything else, empty
+	// included, is a gzipped tar.
+	Format string
+}
+
+// DiskSpace is a server's disk usage.
+type DiskSpace struct {
+	// UsedBytes is what the server's directory currently occupies.
+	UsedBytes int64
+
+	// LimitBytes is what it is allowed, or zero when it is unlimited. Check
+	// this before dividing one by the other.
+	LimitBytes int64
+}
+
+// Unlimited reports whether the server has no disk limit.
+func (d DiskSpace) Unlimited() bool { return d.LimitBytes <= 0 }
+
+// FreeBytes is how much room is left, or -1 when the server is unlimited.
+func (d DiskSpace) FreeBytes() int64 {
+	if d.Unlimited() {
+		return -1
+	}
+	if d.UsedBytes >= d.LimitBytes {
+		return 0
+	}
+	return d.LimitBytes - d.UsedBytes
+}
+
+// HasRoomFor reports whether n more bytes would fit. An unlimited server
+// always has room.
+func (d DiskSpace) HasRoomFor(n int64) bool {
+	return d.Unlimited() || d.UsedBytes+n <= d.LimitBytes
+}
+
+// DownloadRequest is one file to fetch onto a server.
+type DownloadRequest struct {
+	// URL is what to fetch. Only http and https are accepted.
+	URL string
+
+	// Directory is where to put it, relative to the server root.
+	Directory string
+
+	// FileName names the file. Left empty, Wings derives it from the URL.
+	FileName string
+
+	// UseHeader names the file from the response instead, which is what you
+	// want when the URL is a redirect to a CDN and its path says nothing
+	// useful about what is being downloaded.
+	UseHeader bool
+}
+
+// DownloadResult is what became of one request.
+type DownloadResult struct {
+	URL string
+
+	// Path is where the file landed, relative to the server root.
+	Path string
+
+	// Bytes is how much was written.
+	Bytes int64
+
+	// Error is why this one failed, and is empty when it did not. The rest of
+	// a batch is unaffected.
+	Error string
 }
 
 // DigestRequest asks for one hash of a file.

@@ -135,6 +135,17 @@ type Server struct {
 	// FileDenylist is the set of paths the egg forbids all access to. A plugin
 	// granting file access to anyone must honour it.
 	FileDenylist []string
+
+	// Installing, Restoring and Transferring report that the daemon is already
+	// doing something lengthy to this server.
+	//
+	// A plugin should check these before acting: writing files into a server
+	// that is mid-install races the installer, and a power action during a
+	// transfer is refused anyway. The State field says what the process is
+	// doing, which is a different question from what the daemon is.
+	Installing   bool
+	Restoring    bool
+	Transferring bool
 }
 
 // ConsoleLine is one line of output from a server process.

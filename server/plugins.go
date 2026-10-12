@@ -33,6 +33,9 @@ func (s *Server) PluginSnapshot() api.Server {
 		Invocation:   cfg.Invocation,
 		Image:        cfg.Container.Image,
 		EggID:        cfg.Egg.ID,
+		Installing:   s.IsInstalling(),
+		Restoring:    s.IsRestoring(),
+		Transferring: s.IsTransferring(),
 		FileDenylist: append([]string(nil), cfg.Egg.FileDenylist...),
 		Limits: api.Limits{
 			MemoryMiB:  cfg.Build.MemoryLimit,

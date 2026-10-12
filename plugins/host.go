@@ -296,6 +296,40 @@ func (f *files) Exists(uuid, path string) (bool, error) {
 	return f.host.bridge.FileExists(uuid, path)
 }
 
+func (f *files) Stat(uuid, path string) (api.DirEntry, error) {
+	return f.host.bridge.FileStat(uuid, path)
+}
+
+func (f *files) Copy(uuid, path string) (string, error) {
+	return f.host.bridge.FileCopy(uuid, path)
+}
+
+func (f *files) Compress(uuid, directory string, names []string, opts api.CompressOptions) (string, error) {
+	if len(names) == 0 {
+		return "", errors.New("plugins: no entries were named to compress")
+	}
+	return f.host.bridge.FileCompress(uuid, directory, names, opts)
+}
+
+func (f *files) Space(uuid string) (api.DiskSpace, error) {
+	return f.host.bridge.FileSpace(uuid)
+}
+
+func (f *files) Download(uuid string, req api.DownloadRequest) (api.DownloadResult, error) {
+	return f.host.bridge.FileDownload(uuid, req)
+}
+
+func (f *files) DownloadMany(uuid string, reqs []api.DownloadRequest, concurrency int) ([]api.DownloadResult, error) {
+	if len(reqs) == 0 {
+		return nil, nil
+	}
+	return f.host.bridge.FileDownloadMany(uuid, reqs, concurrency)
+}
+
+func (f *files) Decompress(uuid, archive string) error {
+	return f.host.bridge.FileDecompress(uuid, archive)
+}
+
 func (f *files) Digest(uuid, path string, requests []api.DigestRequest) (map[string]string, error) {
 	if len(requests) == 0 {
 		return nil, errors.New("plugins: no digests were requested")

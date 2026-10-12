@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	gopath "path"
 	"runtime"
 	"strings"
 	"sync"
@@ -409,4 +410,120 @@ func (b *Bridge) Exec(uuid string, command []string, opts api.ExecOptions) (api.
 		Truncated: result.Truncated,
 	}
 	return out, err
+}
+
+// FileStat describes one path on a server.
+func (b *Bridge) FileStat(uuid, path string) (api.DirEntry, error) {
+	s, err := b.find(uuid)
+	if err != nil {
+		return api.DirEntry{}, err
+	}
+
+	st, err := s.Filesystem().Stat(path)
+	if err != nil {
+		return api.DirEntry{}, err
+	}
+
+	return api.DirEntry{
+		Name:         st.Name(),
+		Size:         st.Size(),
+		Mode:         uint32(st.Mode().Perm()),
+		Directory:    st.IsDir(),
+		Symlink:      st.Mode()&ufs.ModeSymlink != 0,
+		MimeType:     st.Mimetype,
+		ModifiedUnix: st.ModTime().Unix(),
+	}, nil
+}
+
+// FileCopy duplicates a file or directory beside itself, returning where the
+// copy landed.
+//
+// Wings picks the name, appending a suffix the way the file manager's copy
+// does, so two plugins copying the same file cannot collide.
+func (b *Bridge) FileCopy(uuid, path string) (string, error) {
+	s, err := b.find(uuid)
+	if err != nil {
+		return "", err
+	}
+
+	before, err := siblingNames(s, path)
+	if err != nil {
+		return "", err
+	}
+
+	if err := s.Filesystem().Copy(path); err != nil {
+		return "", err
+	}
+
+	// Wings does not report the name it chose, so it is found by diffing the
+	// directory. Doing it here means a plugin is not left guessing at the
+	// suffix rule.
+	after, err := siblingNames(s, path)
+	if err != nil {
+		return "", err
+	}
+
+	dir := gopath.Dir(path)
+	for name := range after {
+		if !before[name] {
+			return gopath.Join(dir, name), nil
+		}
+	}
+
+	return "", errors.New("pluginbridge: the copy was made but could not be located")
+}
+
+// siblingNames lists the entry names in a path's directory.
+func siblingNames(s *server.Server, path string) (map[string]bool, error) {
+	entries, err := s.Filesystem().ListDirectory(gopath.Dir(path))
+	if err != nil {
+		return nil, err
+	}
+
+	out := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		out[e.Name()] = true
+	}
+	return out, nil
+}
+
+// FileCompress packs entries of a directory into a new archive in that same
+// directory, and returns the archive's path.
+func (b *Bridge) FileCompress(uuid, directory string, names []string, opts api.CompressOptions) (string, error) {
+	s, err := b.find(uuid)
+	if err != nil {
+		return "", err
+	}
+
+	if directory == "" {
+		directory = "/"
+	}
+
+	// Wings owns naming and format selection, including falling back to a
+	// gzipped tar for anything it does not recognise, so both are passed
+	// straight through rather than second-guessed here.
+	info, _, err := s.Filesystem().CompressFiles(directory, opts.Name, names, opts.Format)
+	if err != nil {
+		return "", err
+	}
+
+	return gopath.Join(directory, info.Name()), nil
+}
+
+// FileSpace reports a server's disk usage against its limit.
+func (b *Bridge) FileSpace(uuid string) (api.DiskSpace, error) {
+	s, err := b.find(uuid)
+	if err != nil {
+		return api.DiskSpace{}, err
+	}
+
+	used, err := s.Filesystem().DiskUsage(false)
+	if err != nil {
+		return api.DiskSpace{}, err
+	}
+
+	return api.DiskSpace{
+		UsedBytes:  used,
+		LimitBytes: s.Filesystem().MaxDisk(),
+	}, nil
 }
