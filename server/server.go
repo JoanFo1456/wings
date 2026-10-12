@@ -270,6 +270,16 @@ func (s *Server) Sync() error {
 		return errors.WithStackIf(err)
 	}
 
+	// Reported here rather than from SyncWithConfiguration, for two reasons.
+	// That function holds the configuration write lock for its whole body, so
+	// taking a snapshot inside it deadlocks; and it also runs for every server
+	// while the daemon boots, where nothing has been reconfigured and an event
+	// per server would be noise.
+	plugins.Lifecycle(api.Lifecycle{
+		Server: s.PluginSnapshot(),
+		Event:  api.ServerReconfigured,
+	})
+
 	// Update the disk space limits for the server whenever the configuration for
 	// it changes.
 	if config.Get().System.Quotas.Enabled {
@@ -320,15 +330,6 @@ func (s *Server) SyncWithConfiguration(cfg remote.ServerConfigurationResponse) e
 	s.Lock()
 	s.procConfig = cfg.ProcessConfiguration
 	s.Unlock()
-
-	// Reported after the new configuration is in place, so a plugin reading
-	// the server sees what it was changed to rather than what it was. The
-	// snapshot is taken outside the configuration lock held above, which is
-	// why this runs in its own goroutine.
-	go plugins.Lifecycle(api.Lifecycle{
-		Server: s.PluginSnapshot(),
-		Event:  api.ServerReconfigured,
-	})
 
 	return nil
 }
