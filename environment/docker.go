@@ -39,13 +39,14 @@ func ConfigureDocker(ctx context.Context) error {
 		return err
 	}
 
-	// Windows containers can't use the bridge network Wings creates, they use the
-	// "nat" network every Windows engine provides.
+	// Windows containers can't use the bridge network Wings creates, each of them is
+	// attached to the "nat" network every Windows engine provides instead (see
+	// AdaptForWindowsEngine). The network settings below are written to the
+	// configuration file, so they must never be filled in from a Windows engine, or
+	// a later start on a Linux engine would try to create a network with a driver
+	// that only exists on Windows.
 	if DockerIsWindows() {
-		config.Update(func(c *config.Configuration) {
-			c.Docker.Network.Name = "nat"
-			c.Docker.Network.Mode = "nat"
-		})
+		return nil
 	}
 
 	nw := config.Get().Docker.Network

@@ -172,11 +172,25 @@ func (e *Environment) Create() error {
 
 	// If port is 0 then we have a server with no allocation and this should stay 127.0.0.1 and not the docker network interface ip.
 	if a.DefaultMapping.Port != 0 {
+		// Windows containers are attached to the nat network of their engine, which
+		// is not the network from the configuration file.
+		serverIP := cfg.Docker.Network.Interface
+		if engine.Windows {
+			serverIP = ""
+			if nat, err := engine.Client.NetworkInspect(ctx, "nat", network.InspectOptions{}); err == nil {
+				for _, c := range nat.IPAM.Config {
+					if c.Gateway != "" && !strings.Contains(c.Gateway, ":") {
+						serverIP = c.Gateway
+						break
+					}
+				}
+			}
+		}
 		for i, v := range evs {
 			// Convert 127.0.0.1 to the pelican0 network interface if the environment is Docker
 			// so that the server operates as expected.
-			if v == "SERVER_IP=127.0.0.1" {
-				evs[i] = "SERVER_IP=" + cfg.Docker.Network.Interface
+			if v == "SERVER_IP=127.0.0.1" && serverIP != "" {
+				evs[i] = "SERVER_IP=" + serverIP
 			}
 		}
 	}
