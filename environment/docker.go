@@ -49,16 +49,26 @@ func ConfigureDocker(ctx context.Context) error {
 	}
 
 	nw := config.Get().Docker.Network
+	fields := log.Fields{
+		"network": nw.Name,
+		"driver":  nw.Driver,
+		"mode":    nw.Mode,
+		"engine":  engineKind(),
+	}
+	log.WithFields(fields).Debug("checking the docker network")
+
 	resource, err := cli.NetworkInspect(ctx, nw.Name, network.InspectOptions{})
 	if err != nil {
 		if !client.IsErrNotFound(err) {
-			return err
+			return errors.Wrapf(err, "environment/docker: failed to inspect network %q", nw.Name)
 		}
 
-		log.Info("creating missing pelican0 interface, this could take a few seconds...")
+		log.WithFields(fields).WithField("subnet", nw.Interfaces.V4.Subnet).
+			Info("creating missing pelican0 interface, this could take a few seconds...")
 		if err := createDockerNetwork(ctx, cli); err != nil {
 			return err
 		}
+		log.WithFields(fields).Info("docker network created")
 
 		// Re-inspect the network after creation to get the actual configuration
 		resource, err = cli.NetworkInspect(ctx, nw.Name, network.InspectOptions{})
@@ -106,6 +116,14 @@ func ConfigureDocker(ctx context.Context) error {
 		}
 	})
 	return nil
+}
+
+// engineKind names the kind of containers the default Docker engine runs, for log messages.
+func engineKind() string {
+	if DockerIsWindows() {
+		return "windows"
+	}
+	return "linux"
 }
 
 // Creates a new network on the machine if one does not exist already.
@@ -164,12 +182,12 @@ func createDockerNetwork(ctx context.Context, cli *client.Client) error {
 			
 			_, err = cli.NetworkCreate(ctx, nw.Name, createOpts)
 			if err != nil {
-				return errors.Wrap(err, "environment/docker: failed to create network even with auto-assigned subnet")
+				return errors.Wrapf(err, "environment/docker: failed to create network %q with driver %q even with auto-assigned subnet", nw.Name, nw.Driver)
 			}
 			
 			log.Info("network created successfully with Docker auto-assigned subnet")
 		} else {
-			return errors.Wrap(err, "environment/docker: failed to create network")
+			return errors.Wrapf(err, "environment/docker: failed to create network %q with driver %q", nw.Name, nw.Driver)
 		}
 	}
 

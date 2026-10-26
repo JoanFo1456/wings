@@ -9,6 +9,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/apex/log"
 	"github.com/docker/docker/client"
 	"golang.org/x/sys/windows"
 
@@ -72,7 +73,8 @@ func runningEngine(pipe string) string {
 // changed. An explicit DOCKER_HOST always wins, and if neither engine answers the
 // default is left untouched.
 func selectDockerEngine() {
-	if os.Getenv("DOCKER_HOST") != "" {
+	if host := os.Getenv("DOCKER_HOST"); host != "" {
+		log.WithField("host", host).Debug("DOCKER_HOST is set, using that docker engine only")
 		return
 	}
 	linux, windowsHost := runningEngine(linuxEnginePipe), runningEngine(windowsEnginePipe)
@@ -80,9 +82,15 @@ func selectDockerEngine() {
 	case linux != "" && windowsHost != "":
 		system.SetDockerHost(linux)
 		environment.UseWindowsEngine(windowsHost)
+		log.WithFields(log.Fields{"default": linux, "windows": windowsHost}).
+			Info("both Docker Desktop engines are running, using the Linux engine by default and the Windows engine for Windows images")
 	case linux != "":
 		system.SetDockerHost(linux)
+		log.WithField("host", linux).Info("using the Linux Docker Desktop engine")
 	case windowsHost != "":
 		system.SetDockerHost(windowsHost)
+		log.WithField("host", windowsHost).Info("using the Windows Docker Desktop engine")
+	default:
+		log.Warn("no Docker Desktop engine answered, using the default Docker host")
 	}
 }

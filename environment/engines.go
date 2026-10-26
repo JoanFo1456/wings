@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/apex/log"
 	"github.com/docker/docker/client"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
@@ -86,6 +87,7 @@ func EngineFor(ctx context.Context, image, containerID string) (*Engine, error) 
 		},
 		imageIsWindows: func(ctx context.Context, image string) bool { return imageHasWindowsVersion(ctx, winCli, image) },
 	}) {
+		log.WithFields(log.Fields{"image": image, "container": containerID}).Info("using the Windows engine")
 		return &Engine{Client: winCli, Windows: true}, nil
 	}
 	return defaultEngine, nil
