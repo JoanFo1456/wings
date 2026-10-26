@@ -38,6 +38,7 @@ func newDiagnosticsCommand() *cobra.Command {
 		PreRun: func(cmd *cobra.Command, args []string) {
 			initConfig()
 			log.SetHandler(cli.Default)
+			selectDockerEngine()
 		},
 		Run: diagnosticsCmdRun,
 	}

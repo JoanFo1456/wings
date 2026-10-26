@@ -26,7 +26,6 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
-	"golang.org/x/sys/unix"
 
 	"github.com/pelican/wings/config"
 	"github.com/pelican/wings/environment"
@@ -70,7 +69,12 @@ var versionCommand = &cobra.Command{
 }
 
 func Execute() {
-	if err := rootCommand.Execute(); err != nil {
+	run := func() error { return rootCommand.Execute() }
+	// When started by the Windows service manager, Wings has to run as a service.
+	if runAsWindowsService(run) {
+		return
+	}
+	if err := run(); err != nil {
 		log2.Fatalf("failed to execute command: %s", err)
 	}
 }
@@ -94,7 +98,7 @@ func init() {
 }
 
 func isDockerSnap() bool {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	cli, err := system.NewDockerClient()
 	if err != nil {
 		log.Fatalf("Unable to initialize Docker client: %s", err)
 	}
@@ -111,6 +115,8 @@ func isDockerSnap() bool {
 }
 
 func rootCmdRun(cmd *cobra.Command, _ []string) {
+	selectDockerEngine()
+	cleanupOldExecutables()
 	if config.Get().Debug || !config.Get().Quiet {
 		printLogo()
 	}
@@ -194,7 +200,7 @@ func rootCmdRun(cmd *cobra.Command, _ []string) {
 	}
 
 	if err := config.WriteToDisk(config.Get()); err != nil {
-		if !errors.Is(err, unix.EROFS) {
+		if !isReadOnlyFS(err) {
 			log.WithField("error", err).Error("failed to write configuration to disk")
 		} else {
 			log.WithField("error", err).Debug("failed to write configuration to disk")

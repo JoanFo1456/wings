@@ -41,6 +41,10 @@ type Environment struct {
 	// The Docker client being used for this instance.
 	client *client.Client
 
+	// Whether the engine behind the client runs Windows containers. This is only
+	// ever true on Windows, see environment.EngineFor.
+	windows bool
+
 	// Controls the hijacked response stream which exists only when we're attached to
 	// the running container instance.
 	stream *types.HijackedResponse
@@ -62,7 +66,11 @@ type Environment struct {
 // unique per-server (we use the UUID by default). The container does not need
 // to exist at this point.
 func New(id string, m *Metadata, c *environment.Configuration) (*Environment, error) {
-	cli, err := environment.Docker()
+	var image string
+	if m != nil {
+		image = m.Image
+	}
+	engine, err := environment.EngineFor(context.Background(), image, id)
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +79,8 @@ func New(id string, m *Metadata, c *environment.Configuration) (*Environment, er
 		Id:            id,
 		Configuration: c,
 		meta:          m,
-		client:        cli,
+		client:        engine.Client,
+		windows:       engine.Windows,
 		st:            system.NewAtomicString(environment.ProcessOfflineState),
 		emitter:       events.NewBus(),
 	}

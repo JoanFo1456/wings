@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -125,8 +124,12 @@ func (e *Environment) InSituUpdate() error {
 	// for removing memory limits, a container must be re-created.
 	//
 	// @see https://github.com/moby/moby/issues/41946
+	resources := e.Configuration.Limits().AsContainerResources()
+	if e.windows {
+		resources = environment.WindowsResources(resources)
+	}
 	if _, err := e.client.ContainerUpdate(ctx, e.Id, container.UpdateConfig{
-		Resources: e.Configuration.Limits().AsContainerResources(),
+		Resources: resources,
 	}); err != nil {
 		return errors.Wrap(err, "environment/docker: could not update container")
 	}
@@ -147,6 +150,16 @@ func (e *Environment) Create() error {
 	} else if !client.IsErrNotFound(err) {
 		return errors.WrapIf(err, "environment/docker: failed to inspect container")
 	}
+
+	// The image may have changed since this environment was created, so choose the
+	// engine that runs it again now that the container is about to be created.
+	engine, err := environment.EngineFor(ctx, e.meta.Image, "")
+	if err != nil {
+		return errors.WithStackIf(err)
+	}
+	e.mu.Lock()
+	e.client, e.windows = engine.Client, engine.Windows
+	e.mu.Unlock()
 
 	// Try to pull the requested image before creating the container.
 	if err := e.ensureImageExists(e.meta.Image); err != nil {
@@ -268,6 +281,11 @@ func (e *Environment) Create() error {
 		},
 		NetworkMode: networkMode,
 		UsernsMode:  container.UsernsMode(cfg.Docker.UsernsMode),
+	}
+
+	// Windows containers don't support the Linux specific settings above.
+	if e.windows {
+		environment.AdaptForWindowsEngine(conf, hostConf)
 	}
 
 	var netConf *network.NetworkingConfig = nil //In case when no networking config is needed set nil
@@ -396,7 +414,7 @@ func (e *Environment) ensureImageExists(image string) error {
 	}
 
 	// Get the ImagePullOptions.
-	imagePullOptions := dockerImage.PullOptions{All: false, Platform: runtime.GOOS + "/" + runtime.GOARCH}
+	imagePullOptions := dockerImage.PullOptions{All: false, Platform: environment.PullPlatform(e.windows)}
 	if registryAuth != nil {
 		b64, err := registryAuth.Base64()
 		if err != nil {

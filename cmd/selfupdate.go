@@ -37,6 +37,12 @@ func newSelfupdateCommand() *cobra.Command {
 }
 
 func selfupdateCmdRun(_ *cobra.Command, _ []string) {
+	// Official release binaries are only published for Linux and Windows.
+	if runtime.GOOS != "linux" && runtime.GOOS != "windows" {
+		fmt.Printf("Self-update is only supported on Linux and Windows, not %s. Please update Wings manually.\n", runtime.GOOS)
+		return
+	}
+
 	currentVersion := system.Version
 	if currentVersion == "" {
 		fmt.Println("Error: current version is not defined")
@@ -80,7 +86,7 @@ func selfupdateCmdRun(_ *cobra.Command, _ []string) {
 		return
 	}
 
-	fmt.Println("\nUpdate successful! Please restart the wings service (e.g., systemctl restart wings)")
+	fmt.Printf("\nUpdate successful! %s\n", restartHint)
 }
 
 func performUpdate(version, binaryName string) error {
@@ -118,46 +124,7 @@ func performUpdate(version, binaryName string) error {
 		return fmt.Errorf("failed to locate current executable: %v", err)
 	}
 
-	// Try rename first (faster if on same filesystem)
-	err = os.Rename(binaryPath, currentExecutable)
-	if err != nil {
-		// If rename fails (likely due to cross-filesystem), use copy instead
-		fmt.Println("Direct replacement failed, using copy method...")
-		
-		// Open source file
-		src, err := os.Open(binaryPath)
-		if err != nil {
-			return fmt.Errorf("failed to open source file: %v", err)
-		}
-		defer src.Close()
-		
-		// Create a temporary file in the same directory as the executable
-		execDir := filepath.Dir(currentExecutable)
-		tempExec := filepath.Join(execDir, fmt.Sprintf(".%s.new", filepath.Base(currentExecutable)))
-		
-		// Create the new executable file
-		dst, err := os.OpenFile(tempExec, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0755)
-		if err != nil {
-			return fmt.Errorf("failed to create new executable: %v", err)
-		}
-		
-		// Copy the content
-		_, err = io.Copy(dst, src)
-		dst.Close()
-		if err != nil {
-			os.Remove(tempExec) // Clean up on failure
-			return fmt.Errorf("failed to copy new binary: %v", err)
-		}
-		
-		// Replace the old executable with the new one
-		err = os.Rename(tempExec, currentExecutable)
-		if err != nil {
-			os.Remove(tempExec) // Clean up on failure
-			return fmt.Errorf("failed to replace executable: %v", err)
-		}
-	}
-
-	return nil
+	return replaceExecutable(binaryPath, currentExecutable)
 }
 
 func downloadWithProgress(url, dest string) error {
@@ -215,9 +182,18 @@ func fetchLatestGitHubRelease() (string, error) {
 }
 
 func determineBinaryName() string {
-	switch runtime.GOARCH {
+	return binaryNameFor(runtime.GOOS, runtime.GOARCH)
+}
+
+// binaryNameFor returns the name of the release asset for the given platform.
+func binaryNameFor(goos, goarch string) string {
+	switch goarch {
 	case "amd64", "arm64":
-		return fmt.Sprintf("wings_%s_%s", runtime.GOOS, runtime.GOARCH)
+		name := fmt.Sprintf("wings_%s_%s", goos, goarch)
+		if goos == "windows" {
+			name += ".exe"
+		}
+		return name
 	default:
 		return ""
 	}

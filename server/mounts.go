@@ -2,6 +2,7 @@ package server
 
 import (
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -68,7 +69,10 @@ func (s *Server) customMounts() []environment.Mount {
 
 	for _, m := range s.Config().Mounts {
 		source := filepath.Clean(m.Source)
-		target := filepath.Clean(m.Target)
+		// The target is a path inside the (Linux) container, so it must keep forward
+		// slashes even when Wings runs on Windows, where filepath.Clean would turn
+		// it into a backslash path.
+		target := path.Clean(m.Target)
 
 		logger := s.Log().WithFields(log.Fields{
 			"source_path": source,

@@ -21,9 +21,13 @@ build-darwin:
 	GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -gcflags "all=-trimpath=$(CURDIR)" -o build/wings_darwin_arm64 -v wings.go
 	GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -gcflags "all=-trimpath=$(CURDIR)" -o build/wings_darwin_amd64 -v wings.go
 
-cross-build: clean build build-darwin
+build-windows:
+	GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -gcflags "all=-trimpath=$(CURDIR)" -o build/wings_windows_amd64.exe -v wings.go
+	GOOS=windows GOARCH=arm64 go build -ldflags="-s -w" -gcflags "all=-trimpath=$(CURDIR)" -o build/wings_windows_arm64.exe -v wings.go
+
+cross-build: clean build build-darwin build-windows
 
 clean:
 	rm -rf build/wings_*
 
-.PHONY: build build-darwin cross-build clean test debug rmdebug
+.PHONY: build build-darwin build-windows cross-build clean test debug rmdebug

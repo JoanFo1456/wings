@@ -1,9 +1,6 @@
-//go:build unix
-
 package filesystem
 
 import (
-	"golang.org/x/sys/unix"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -186,14 +183,13 @@ func (fs *Filesystem) DirectorySize(root string) (int64, error) {
 			return errors.Wrap(err, "lstatat err")
 		}
 
-		var sysFileInfo = info.Sys().(*unix.Stat_t)
-		if sysFileInfo.Nlink > 1 {
+		if ino, ok := hardLinkID(info); ok {
 			// Hard links have the same inode number
-			if slices.Contains(hardLinks, sysFileInfo.Ino) {
+			if slices.Contains(hardLinks, ino) {
 				// Don't add hard links size twice
 				return nil
 			} else {
-				hardLinks = append(hardLinks, sysFileInfo.Ino)
+				hardLinks = append(hardLinks, ino)
 			}
 		}
 

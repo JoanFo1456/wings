@@ -12,6 +12,7 @@ import (
 	"github.com/docker/docker/client"
 
 	"github.com/pelican/wings/config"
+	"github.com/pelican/wings/system"
 )
 
 var (
@@ -25,7 +26,7 @@ var (
 func Docker() (*client.Client, error) {
 	var err error
 	_conce.Do(func() {
-		_client, err = client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+		_client, err = system.NewDockerClient()
 	})
 	return _client, errors.Wrap(err, "environment/docker: could not create client")
 }
@@ -36,6 +37,15 @@ func ConfigureDocker(ctx context.Context) error {
 	cli, err := Docker()
 	if err != nil {
 		return err
+	}
+
+	// Windows containers can't use the bridge network Wings creates, they use the
+	// "nat" network every Windows engine provides.
+	if DockerIsWindows() {
+		config.Update(func(c *config.Configuration) {
+			c.Docker.Network.Name = "nat"
+			c.Docker.Network.Mode = "nat"
+		})
 	}
 
 	nw := config.Get().Docker.Network

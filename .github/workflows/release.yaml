@@ -31,6 +31,8 @@ jobs:
           chmod 755 dist/wings_linux_amd64
           GOARCH=arm64 go build -o dist/wings_linux_arm64 -v -trimpath -ldflags="-s -w -X github.com/pelican/wings/system.Version=${REF:11}" github.com/pelican/wings
           chmod 755 dist/wings_linux_arm64
+          GOOS=windows GOARCH=amd64 go build -o dist/wings_windows_amd64.exe -v -trimpath -ldflags="-s -w -X github.com/pelican/wings/system.Version=${REF:11}" github.com/pelican/wings
+          GOOS=windows GOARCH=arm64 go build -o dist/wings_windows_arm64.exe -v -trimpath -ldflags="-s -w -X github.com/pelican/wings/system.Version=${REF:11}" github.com/pelican/wings
 
       - name: Extract changelog
         env:
@@ -42,8 +44,10 @@ jobs:
         run: |
           SUM=`cd dist && sha256sum wings_linux_amd64`
           SUM2=`cd dist && sha256sum wings_linux_arm64`
-          echo -e "\n#### SHA256 Checksum\n\`\`\`\n$SUM\n$SUM2\n\`\`\`\n" >> ./RELEASE_CHANGELOG
-          echo -e "$SUM\n$SUM2" > checksums.txt
+          SUM3=`cd dist && sha256sum wings_windows_amd64.exe`
+          SUM4=`cd dist && sha256sum wings_windows_arm64.exe`
+          echo -e "\n#### SHA256 Checksum\n\`\`\`\n$SUM\n$SUM2\n$SUM3\n$SUM4\n\`\`\`\n" >> ./RELEASE_CHANGELOG
+          echo -e "$SUM\n$SUM2\n$SUM3\n$SUM4" > checksums.txt
 
       - name: Create release branch
         env:

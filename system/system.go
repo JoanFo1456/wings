@@ -1,5 +1,3 @@
-//go:build unix
-
 package system
 
 import (
@@ -8,7 +6,6 @@ import (
 	"runtime"
 	"strings"
 	
-	"golang.org/x/sys/unix"
 
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
@@ -17,7 +14,6 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/system"
-	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/parsers/kernel"
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/disk"
@@ -117,6 +113,8 @@ func GetSystemInformation() (*Information, error) {
 	var os string
 	if runtime.GOOS == "darwin" {
 		os = "macOS"
+	} else if runtime.GOOS == "windows" {
+		os = "Windows " + k.String()
 	} else {
 		release, err := osrelease.Read()
 		if err != nil {
@@ -188,30 +186,11 @@ func GetSystemIps() ([]string, error) {
 	return ip_addrs, nil
 }
 
-// getDiskForPath finds the mountpoint where the given path is stored
-func getDiskForPath(path string, partitions []disk.PartitionStat) (string, string, error) {
-	var stat unix.Statfs_t
-	if err := unix.Statfs(path, &stat); err != nil {
-		return "", "", err
-	}
-
-	for _, part := range partitions {
-		var pStat unix.Statfs_t
-		if err := unix.Statfs(part.Mountpoint, &pStat); err != nil {
-			continue
-		}
-		if stat.Fsid == pStat.Fsid {
-			return part.Device, part.Mountpoint, nil
-		}
-	}
-
-	return "", "", nil // No error, but couldn't find the disk
-}
-
 // Gets the system release name.
 func getSystemName() (string, error) {
-	if runtime.GOOS == "darwin" {
-		return "darwin", nil
+	switch runtime.GOOS {
+	case "darwin", "windows":
+		return runtime.GOOS, nil
 	}
 	// use osrelease to get release version and ID
 	release, err := osrelease.Read()
@@ -334,7 +313,7 @@ func GetSystemUtilization(root, logs, data, archive, backup, temp string) (*Util
 
 func GetDockerDiskUsage(ctx context.Context) (*DockerDiskUsage, error) {
 	// TODO: find a way to re-use the client from the docker environment.
-	c, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	c, err := NewDockerClient()
 	if err != nil {
 		return &DockerDiskUsage{}, err
 	}
@@ -375,7 +354,7 @@ func GetDockerDiskUsage(ctx context.Context) (*DockerDiskUsage, error) {
 
 func PruneDockerImages(ctx context.Context) (image.PruneReport, error) {
 	// TODO: find a way to re-use the client from the docker environment.
-	c, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	c, err := NewDockerClient()
 	if err != nil {
 		return image.PruneReport{}, err
 	}
@@ -390,7 +369,7 @@ func PruneDockerImages(ctx context.Context) (image.PruneReport, error) {
 
 func GetDockerInfo(ctx context.Context) (types.Version, system.Info, error) {
 	// TODO: find a way to re-use the client from the docker environment.
-	c, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	c, err := NewDockerClient()
 	if err != nil {
 		return types.Version{}, system.Info{}, err
 	}

@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -121,6 +120,8 @@ type InstallationProcess struct {
 	Server *Server
 	Script *remote.InstallationScript
 	client *client.Client
+	// Whether the engine behind the client runs Windows containers.
+	windows bool
 }
 
 // NewInstallationProcess returns a new installation process struct that will be
@@ -132,11 +133,16 @@ func NewInstallationProcess(s *Server, script *remote.InstallationScript) (*Inst
 		Server: s,
 	}
 
-	if c, err := environment.Docker(); err != nil {
-		return nil, err
-	} else {
-		proc.client = c
+	// The installation container can run on a different engine than the server.
+	var image string
+	if script != nil {
+		image = script.ContainerImage
 	}
+	engine, err := environment.EngineFor(context.Background(), image, "")
+	if err != nil {
+		return nil, err
+	}
+	proc.client, proc.windows = engine.Client, engine.Windows
 
 	return proc, nil
 }
@@ -242,12 +248,12 @@ func (ip *InstallationProcess) writeScriptToDisk() error {
 	if err := os.MkdirAll(ip.tempDir(), 0o700); err != nil {
 		return errors.WithMessage(err, "could not create temporary directory for install process")
 	}
-	f, err := os.OpenFile(filepath.Join(ip.tempDir(), "install.sh"), os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644)
+	f, err := os.OpenFile(filepath.Join(ip.tempDir(), installScriptName(ip.windows)), os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
 		return errors.WithMessage(err, "failed to write server installation script to disk before mount")
 	}
 	defer f.Close()
-	if _, err := io.Copy(f, strings.NewReader(strings.ReplaceAll(ip.Script.Script, "\r\n", "\n"))); err != nil {
+	if _, err := f.Write(installScriptContent(ip.windows, ip.Script.Script)); err != nil {
 		return err
 	}
 	return nil
@@ -262,7 +268,7 @@ func (ip *InstallationProcess) pullInstallationImage() error {
 	}
 
 	// Get the ImagePullOptions.
-	imagePullOptions := dockerImage.PullOptions{All: false, Platform: runtime.GOOS + "/" + runtime.GOARCH}
+	imagePullOptions := dockerImage.PullOptions{All: false, Platform: environment.PullPlatform(ip.windows)}
 	if registryAuth != nil {
 		b64, err := registryAuth.Base64()
 		if err != nil {
@@ -434,7 +440,7 @@ func (ip *InstallationProcess) Execute() (string, error) {
 		AttachStdin:  true,
 		OpenStdin:    true,
 		Tty:          true,
-		Cmd:          []string{ip.Script.Entrypoint, "/mnt/install/install.sh"},
+		Cmd:          installCommand(ip.windows, ip.Script.Entrypoint),
 		Image:        ip.Script.ContainerImage,
 		Env:          ip.Server.GetEnvironmentVariables(),
 		Labels: map[string]string{
@@ -470,6 +476,11 @@ func (ip *InstallationProcess) Execute() (string, error) {
 		UsernsMode:  container.UsernsMode(cfg.Docker.UsernsMode),
 	}
 
+	// Windows containers don't support the Linux specific settings above.
+	if ip.windows {
+		environment.AdaptForWindowsEngine(conf, hostConf)
+	}
+
 	// Ensure the root directory for the server exists properly before attempting
 	// to trigger the reinstall of the server. It is possible the directory would
 	// not exist when this runs if Wings boots with a missing directory and a user
@@ -478,7 +489,7 @@ func (ip *InstallationProcess) Execute() (string, error) {
 		return "", err
 	}
 
-	ip.Server.Log().WithField("install_script", ip.tempDir()+"/install.sh").Info("creating install container for server process")
+	ip.Server.Log().WithField("install_script", ip.tempDir()+"/"+installScriptName(ip.windows)).Info("creating install container for server process")
 	// Remove the temporary directory when the installation process finishes for this server container.
 	defer func() {
 		if err := os.RemoveAll(ip.tempDir()); err != nil {

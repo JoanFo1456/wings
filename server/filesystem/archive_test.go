@@ -4,6 +4,7 @@ import (
 	"context"
 	iofs "io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -137,7 +138,7 @@ func getFiles(f iofs.ReadDirFS, name string) ([]string, error) {
 	for _, e := range entries {
 		entryName := e.Name()
 		if name != "." {
-			entryName = filepath.Join(name, entryName)
+			entryName = path.Join(name, entryName)
 		}
 
 		if e.IsDir() {

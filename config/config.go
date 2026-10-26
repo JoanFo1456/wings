@@ -27,7 +27,9 @@ import (
 	"github.com/pelican/wings/system"
 )
 
-const DefaultLocation = "/etc/pelican/config.yml"
+// DefaultLocation is the default location of the configuration file, it is
+// platform specific.
+var DefaultLocation = defaultLocation()
 
 // DefaultTLSConfig sets sane defaults to use when configuring the internal
 // webserver to listen for public connections.
@@ -422,6 +424,7 @@ func NewAtPath(path string) (*Configuration, error) {
 	if err := defaults.Set(&c); err != nil {
 		return nil, err
 	}
+	applyPlatformDefaults(&c)
 	// Track the location where we created this configuration.
 	c.path = path
 	return &c, nil
@@ -539,8 +542,10 @@ func EnsurePelicanUser() error {
 		return nil
 	}
 
-	// Our way of detecting if wings is running inside of Docker.
-	if sysName == "distroless" {
+	// Our way of detecting if wings is running inside of Docker. Windows has no
+	// useradd and doesn't track file ownership (Docker Desktop runs the Linux
+	// containers in a VM), so it only needs the user containers run as.
+	if sysName == "distroless" || sysName == "windows" {
 		_config.System.Username = system.FirstNotEmpty(os.Getenv("WINGS_USERNAME"), "pelican")
 		_config.System.User.Uid = system.MustInt(system.FirstNotEmpty(os.Getenv("WINGS_UID"), "988"))
 		_config.System.User.Gid = system.MustInt(system.FirstNotEmpty(os.Getenv("WINGS_GID"), "988"))
@@ -735,6 +740,11 @@ func EnableLogRotation() error {
 		return nil
 	}
 
+	// logrotate only exists on Linux.
+	if runtime.GOOS != "linux" {
+		return nil
+	}
+
 	if st, err := os.Stat("/etc/logrotate.d"); err != nil && !os.IsNotExist(err) {
 		return err
 	} else if (err != nil && os.IsNotExist(err)) || !st.IsDir() {
@@ -788,6 +798,10 @@ func ConfigureTimezone() error {
 	if _config.System.Timezone == "" && tz != "" {
 		_config.System.Timezone = tz
 	}
+	if _config.System.Timezone == "" && runtime.GOOS == "windows" {
+		// Windows doesn't use IANA timezone names, so there is nothing to detect.
+		_config.System.Timezone = "UTC"
+	}
 	if _config.System.Timezone == "" {
 		b, err := os.ReadFile("/etc/timezone")
 		if err != nil {
@@ -827,8 +841,9 @@ func ConfigureTimezone() error {
 
 // Gets the system release name.
 func getSystemName() (string, error) {
-	if runtime.GOOS == "darwin" {
-		return "darwin", nil
+	switch runtime.GOOS {
+	case "darwin", "windows":
+		return runtime.GOOS, nil
 	}
 	// use osrelease to get release version and ID
 	release, err := osrelease.Read()
