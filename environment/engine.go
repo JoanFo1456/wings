@@ -105,6 +105,11 @@ const windowsNetworkMode = "nat"
 func AdaptForWindowsEngine(conf *container.Config, hc *container.HostConfig) {
 	conf.User = windowsContainerUser
 
+	// The console host of a Windows container draws a fixed size screen and moves the
+	// cursor around to update it, which garbles the output in the panel console. Without
+	// a TTY the output is plain text, see Environment.consoleOutput.
+	conf.Tty = false
+
 	hc.Tmpfs = nil
 	hc.SecurityOpt = nil
 	hc.ReadonlyRootfs = false

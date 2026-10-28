@@ -48,7 +48,7 @@ func TestWindowsMountTarget(t *testing.T) {
 
 func TestAdaptForWindowsEngine(t *testing.T) {
 	pids := int64(512)
-	conf := &container.Config{User: "988:988"}
+	conf := &container.Config{User: "988:988", Tty: true}
 	hc := &container.HostConfig{
 		Tmpfs:          map[string]string{"/tmp": "rw"},
 		SecurityOpt:    []string{"no-new-privileges"},
@@ -71,6 +71,9 @@ func TestAdaptForWindowsEngine(t *testing.T) {
 
 	if hc.NetworkMode != "nat" {
 		t.Errorf("network mode = %q, want nat", hc.NetworkMode)
+	}
+	if conf.Tty {
+		t.Error("windows containers must not have a tty")
 	}
 	if hc.Tmpfs != nil || hc.SecurityOpt != nil || hc.ReadonlyRootfs || hc.CapDrop != nil || hc.UsernsMode != "" {
 		t.Errorf("Linux-only settings were not removed: %+v", hc)

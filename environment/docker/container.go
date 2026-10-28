@@ -17,6 +17,7 @@ import (
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/stdcopy"
 
 	"github.com/pelican/wings/config"
 	"github.com/pelican/wings/environment"
@@ -63,6 +64,7 @@ func (e *Environment) Attach(ctx context.Context) error {
 	} else {
 		e.SetStream(&st)
 	}
+	output := e.consoleOutput(ctx, e.stream.Reader)
 
 	go func() {
 		// Don't use the context provided to the function, that'll cause the polling to
@@ -86,7 +88,7 @@ func (e *Environment) Attach(ctx context.Context) error {
 			}
 		}()
 
-		if err := system.ScanReader(e.stream.Reader, func(v []byte) {
+		if err := system.ScanReader(output, func(v []byte) {
 			e.logCallbackMx.Lock()
 			defer e.logCallbackMx.Unlock()
 			e.logCallback(v)
@@ -97,6 +99,28 @@ func (e *Environment) Attach(ctx context.Context) error {
 	}()
 
 	return nil
+}
+
+// consoleOutput returns the plain console output of the container. A container
+// that has a TTY already sends it as is, a container without one, which is the case
+// for Windows containers, multiplexes stdout and stderr in a single stream.
+func (e *Environment) consoleOutput(ctx context.Context, r io.Reader) io.Reader {
+	e.mu.RLock()
+	windows := e.windows
+	e.mu.RUnlock()
+	if !windows {
+		return r
+	}
+	if c, err := e.client.ContainerInspect(ctx, e.Id); err != nil || c.Config == nil || c.Config.Tty {
+		return r
+	}
+
+	pr, pw := io.Pipe()
+	go func() {
+		_, err := stdcopy.StdCopy(pw, pw, r)
+		_ = pw.CloseWithError(err)
+	}()
+	return pr
 }
 
 // InSituUpdate performs an in-place update of the Docker container's resource
@@ -390,7 +414,7 @@ func (e *Environment) Readlog(lines int) ([]string, error) {
 	defer r.Close()
 
 	var out []string
-	scanner := bufio.NewScanner(r)
+	scanner := bufio.NewScanner(e.consoleOutput(context.Background(), r))
 	for scanner.Scan() {
 		out = append(out, scanner.Text())
 	}
