@@ -85,12 +85,6 @@ func windowsResources(r container.Resources) container.Resources {
 	return container.Resources{Memory: r.Memory}
 }
 
-// WindowsResources reduces the resource limits to the ones Windows containers
-// support, for containers that run on the Windows engine.
-func WindowsResources(r container.Resources) container.Resources {
-	return windowsResources(r)
-}
-
 // windowsContainerUser is the user Windows containers run the server as. Windows
 // containers don't know numeric uid:gid pairs, they only accept a user name and
 // the unprivileged account of the Windows base images is called ContainerUser.

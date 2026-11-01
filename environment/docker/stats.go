@@ -52,6 +52,10 @@ func (e *Environment) pollResources(ctx context.Context) error {
 		e.log().WithField("error", err).Warn("failed to calculate container uptime")
 	}
 
+	e.mu.RLock()
+	windows := e.windows
+	e.mu.RUnlock()
+
 	dec := json.NewDecoder(stats.Body)
 	for {
 		select {
@@ -72,6 +76,10 @@ func (e *Environment) pollResources(ctx context.Context) error {
 			if e.st.Load() == environment.ProcessOfflineState {
 				e.log().Debug("process in offline state while resource polling is still active; stopping poll")
 				return nil
+			}
+
+			if windows {
+				v = windowsStats(v)
 			}
 
 			if !v.PreRead.IsZero() {
@@ -105,6 +113,21 @@ func (e *Environment) pollResources(ctx context.Context) error {
 			e.Events().Publish(environment.ResourceEvent, st)
 		}
 	}
+}
+
+// windowsStats converts the statistics of a Windows container to the fields a Linux
+// container reports them in, which the rest of the calculations are based on. A Windows
+// container has no usage or cgroup block I/O values: its memory is the private working
+// set, its CPU time is counted in units of 100ns and its disk I/O is in the storage stats.
+func windowsStats(v container.StatsResponse) container.StatsResponse {
+	v.MemoryStats.Usage = v.MemoryStats.PrivateWorkingSet
+	v.CPUStats.CPUUsage.TotalUsage *= 100
+	v.PreCPUStats.CPUUsage.TotalUsage *= 100
+	v.BlkioStats.IoServiceBytesRecursive = []container.BlkioStatEntry{
+		{Op: "read", Value: v.StorageStats.ReadSizeBytes},
+		{Op: "write", Value: v.StorageStats.WriteSizeBytes},
+	}
+	return v
 }
 
 // The "docker stats" CLI call does not return the same value as the types.MemoryStats.Usage

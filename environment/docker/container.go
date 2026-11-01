@@ -128,6 +128,15 @@ func (e *Environment) consoleOutput(ctx context.Context, r io.Reader) io.Reader 
 // container. This allows memory, cpu, and IO limitations to be adjusted on the
 // fly for individual instances.
 func (e *Environment) InSituUpdate() error {
+	// The Windows engine can't update the resources of a container that exists, the
+	// limits are applied when the container is created.
+	e.mu.RLock()
+	windows := e.windows
+	e.mu.RUnlock()
+	if windows {
+		return nil
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 	defer cancel()
 
@@ -149,9 +158,6 @@ func (e *Environment) InSituUpdate() error {
 	//
 	// @see https://github.com/moby/moby/issues/41946
 	resources := e.Configuration.Limits().AsContainerResources()
-	if e.windows {
-		resources = environment.WindowsResources(resources)
-	}
 	if _, err := e.client.ContainerUpdate(ctx, e.Id, container.UpdateConfig{
 		Resources: resources,
 	}); err != nil {

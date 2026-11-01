@@ -78,3 +78,21 @@ func cpuStatsResponse(preRead time.Time, elapsed time.Duration, previous, curren
 		},
 	}
 }
+
+func TestWindowsStats(t *testing.T) {
+	base := time.Date(2026, time.November, 1, 12, 0, 0, 0, time.UTC)
+	// Windows counts CPU time in units of 100ns, 10_000_000 of them are one second.
+	stats := cpuStatsResponse(base, time.Second, 10_000_000, 15_000_000)
+	stats.MemoryStats.PrivateWorkingSet = 293_564_416
+	stats.StorageStats.ReadSizeBytes = 8_407_040
+	stats.StorageStats.WriteSizeBytes = 7_515_648
+
+	got := windowsStats(stats)
+
+	require.Equal(t, uint64(293_564_416), calculateDockerMemory(got.MemoryStats))
+	// Half a second of CPU time in one second of wall time.
+	require.Equal(t, 50.0, calculateDockerAbsoluteCpu(got))
+	require.Len(t, got.BlkioStats.IoServiceBytesRecursive, 2)
+	require.Equal(t, uint64(8_407_040), got.BlkioStats.IoServiceBytesRecursive[0].Value)
+	require.Equal(t, uint64(7_515_648), got.BlkioStats.IoServiceBytesRecursive[1].Value)
+}
